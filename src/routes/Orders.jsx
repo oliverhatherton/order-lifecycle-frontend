@@ -6,7 +6,7 @@ import { ErrorBanner } from '../components/ErrorBanner.jsx'
 import { OrderStatusBadge } from '../components/OrderStatusBadge.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
 
-const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED'])
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const POLL_INTERVAL_MS = 1200
 
 // RESERVED is a genuine pause — nothing advances an order past it until the
@@ -23,17 +23,29 @@ function awaitingPay(order) {
   return order.status === 'RESERVED' && !order.paymentInitiatedAt
 }
 
+// Cancellable while PENDING (still reserving), or RESERVED as long as Pay
+// hasn't been clicked yet — once paymentInitiatedAt is set, it's too late.
+function canCancel(order) {
+  if (order.status === 'PENDING') return true
+  return order.status === 'RESERVED' && !order.paymentInitiatedAt
+}
+
 function formatTime(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function formatItems(items) {
+  if (!items?.length) return '—'
+  return items.map((i) => `${i.quantity}× ${i.productName}`).join(', ')
 }
 
 export function Orders() {
   const { status: authStatus, isAuthenticated } = useAuth()
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
   const [payingIds, setPayingIds] = useState(() => new Set())
+  const [cancelingIds, setCancelingIds] = useState(() => new Set())
   const [error, setError] = useState(null)
   const ordersRef = useRef(orders)
 
@@ -62,8 +74,8 @@ export function Orders() {
     }
   }, [isAuthenticated])
 
-  // Fulfilment runs asynchronously over RabbitMQ after POST /orders (and
-  // again after POST /orders/:id/pay), so we poll each order the server is
+  // Fulfilment runs asynchronously over RabbitMQ after checkout (and again
+  // after POST /orders/:id/pay), so we poll each order the server is
   // actively progressing until it lands on RESERVED-awaiting-pay or a
   // terminal state.
   useEffect(() => {
@@ -83,19 +95,6 @@ export function Orders() {
     }, POLL_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [isAuthenticated])
-
-  async function handleCreate() {
-    setCreating(true)
-    setError(null)
-    try {
-      const { data } = await api.createOrder()
-      setOrders((prev) => [data, ...prev])
-    } catch (err) {
-      setError(err)
-    } finally {
-      setCreating(false)
-    }
-  }
 
   async function handlePay(orderId) {
     setPayingIds((prev) => new Set(prev).add(orderId))
@@ -126,6 +125,34 @@ export function Orders() {
     }
   }
 
+  async function handleCancel(orderId) {
+    setCancelingIds((prev) => new Set(prev).add(orderId))
+    setError(null)
+    try {
+      const { data } = await api.cancelOrder(orderId)
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
+    } catch (err) {
+      // 409 = too late to cancel (payment already initiated, or already
+      // terminal) — re-sync rather than showing it as an error.
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const { data } = await api.getOrder(orderId)
+          setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
+        } catch (refetchErr) {
+          setError(refetchErr)
+        }
+      } else {
+        setError(err)
+      }
+    } finally {
+      setCancelingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(orderId)
+        return next
+      })
+    }
+  }
+
   const hasInFlight = orders.some(needsPolling)
 
   if (authStatus === 'loading') return <CenterLoading />
@@ -136,7 +163,7 @@ export function Orders() {
         <div className="page-header">
           <div>
             <h1>Orders</h1>
-            <p className="subtitle">Place orders and watch them move through the fulfilment pipeline.</p>
+            <p className="subtitle">Watch orders you've checked out from the shop move through the fulfilment pipeline.</p>
           </div>
         </div>
         <div className="auth-card" style={{ margin: '48px auto' }}>
@@ -159,14 +186,13 @@ export function Orders() {
         <div>
           <h1>Orders</h1>
           <p className="subtitle">
-            Placing an order returns immediately as <code>PENDING</code>; inventory reservation runs asynchronously
-            and pauses at <code>RESERVED</code> until you click <strong>Pay</strong> — nothing charges or completes
-            before that.
+            Orders are created by checking out a cart — inventory reservation runs asynchronously and pauses at{' '}
+            <code>RESERVED</code> until you click <strong>Pay</strong>. You can cancel any time before that.
           </p>
         </div>
-        <button type="button" className="btn primary" onClick={handleCreate} disabled={creating}>
-          {creating ? 'Placing…' : 'Place order'}
-        </button>
+        <Link to="/shop" className="btn primary">
+          Shop
+        </Link>
       </div>
 
       <ErrorBanner error={error} />
@@ -174,7 +200,9 @@ export function Orders() {
       {loading ? (
         <CenterLoading />
       ) : orders.length === 0 ? (
-        <div className="empty-state">No orders yet — place one to see the fulfilment pipeline run.</div>
+        <div className="empty-state">
+          No orders yet — <Link to="/shop">visit the shop</Link> to place one and watch the fulfilment pipeline run.
+        </div>
       ) : (
         <div className="card" style={{ padding: 0 }}>
           <table className="orders-table">
@@ -182,6 +210,7 @@ export function Orders() {
               <tr>
                 <th>Order</th>
                 <th>Status</th>
+                <th>Items</th>
                 <th>Created</th>
                 <th>Updated</th>
                 <th></th>
@@ -191,21 +220,31 @@ export function Orders() {
               {orders.map((order) => {
                 const polling = needsPolling(order)
                 const readyToPay = awaitingPay(order)
+                const cancelable = canCancel(order)
                 const paying = payingIds.has(order.id)
+                const canceling = cancelingIds.has(order.id)
+                const itemsText = formatItems(order.items)
                 return (
                   <tr key={order.id}>
                     <td className="mono">{order.id.slice(0, 8)}</td>
                     <td>
                       <OrderStatusBadge status={order.status} />
                       {polling && <span className="live-dot" style={{ marginLeft: 8 }} title="Polling for updates" />}
-                      {readyToPay && <span className="not-exposed" style={{ marginLeft: 8 }}>awaiting payment</span>}
+                    </td>
+                    <td className="truncate" title={itemsText}>
+                      {itemsText}
                     </td>
                     <td>{formatTime(order.createdAt)}</td>
                     <td>{formatTime(order.updatedAt)}</td>
-                    <td style={{ textAlign: 'right' }}>
+                    <td className="orders-actions">
                       {readyToPay && (
-                        <button type="button" className="btn small primary" disabled={paying} onClick={() => handlePay(order.id)}>
+                        <button type="button" className="btn small primary" disabled={paying || canceling} onClick={() => handlePay(order.id)}>
                           {paying ? 'Paying…' : 'Pay'}
+                        </button>
+                      )}
+                      {cancelable && (
+                        <button type="button" className="btn small danger" disabled={paying || canceling} onClick={() => handleCancel(order.id)}>
+                          {canceling ? '…' : 'Cancel'}
                         </button>
                       )}
                     </td>

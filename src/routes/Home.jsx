@@ -11,8 +11,12 @@ const FEATURES = [
     body: 'Short-lived access tokens live in memory only; the refresh token is an httpOnly cookie the browser manages. Reuse of a stolen refresh token revokes the whole family.',
   },
   {
+    title: 'Real cart, real stock',
+    body: 'Orders come from checking out a cart against a live product catalog. Stock is genuinely decremented on reservation — run out mid-checkout and the order fails, it doesn’t fake success.',
+  },
+  {
     title: 'Async fulfilment, with one manual gate',
-    body: 'Placing an order reserves inventory automatically over RabbitMQ. It then genuinely pauses at RESERVED — nothing charges or completes until you click Pay, which resumes the chain.',
+    body: 'Checkout reserves inventory automatically over RabbitMQ, then genuinely pauses at RESERVED — nothing charges or completes until you click Pay. Cancel any time before that.',
   },
   {
     title: 'Role-based admin',
@@ -26,11 +30,10 @@ const FEATURES = [
 
 export function Home() {
   const { isAuthenticated } = useAuth()
-  const { families, hasTwoSamples, rate, lastUpdated } = useMetricsPoller(5000)
+  const { families, lastUpdated } = useMetricsPoller(5000)
 
   const startTime = scalarValue(families.get('process_start_time_seconds'))
   const uptimeSeconds = startTime && lastUpdated ? lastUpdated / 1000 - startTime : null
-  const requestsPerSec = hasTwoSamples ? rate('http_request_duration_seconds', { suffix: 'count' }) : null
   const hasStats = families.size > 0
 
   return (
@@ -42,12 +45,12 @@ export function Home() {
         <h1>An order-fulfilment pipeline you can watch run.</h1>
         <p className="hero-lead">
           A NestJS backend with JWT auth, async order fulfilment over RabbitMQ, and Prometheus observability — and
-          this UI as a real client for all three: place an order, watch it move through the pipeline, and see the
-          system metrics update as it happens.
+          this UI as a real client for all three: shop a real product catalog, check out, watch the order move
+          through the pipeline, and see the system metrics update as it happens.
         </p>
         <div className="hero-actions">
-          <Link to={isAuthenticated ? '/orders' : '/register'} className="btn primary large">
-            {isAuthenticated ? 'Go to orders' : 'Create an account'}
+          <Link to={isAuthenticated ? '/shop' : '/register'} className="btn primary large">
+            {isAuthenticated ? 'Shop' : 'Create an account'}
           </Link>
           <Link to="/metrics" className="btn large">
             View live metrics
@@ -59,7 +62,7 @@ export function Home() {
             <div className="pipeline-step" key={step}>
               <div className="pipeline-node">
                 <span className={`badge ${step.toLowerCase()}`}>{step}</span>
-                {step === 'RESERVED' && <span className="pipeline-gate">⏸ waits for Pay</span>}
+                {step === 'RESERVED' && <span className="pipeline-gate">⏸ waits for Pay (or Cancel)</span>}
               </div>
               {i < PIPELINE.length - 1 && <span className="pipeline-arrow">→</span>}
             </div>
@@ -93,10 +96,6 @@ export function Home() {
           <div className="card metric-card">
             <span className="label">Uptime</span>
             <span className="value small">{uptimeSeconds !== null ? formatDuration(uptimeSeconds) : hasStats ? 'not exposed' : '—'}</span>
-          </div>
-          <div className="card metric-card">
-            <span className="label">Requests/sec</span>
-            <span className="value small">{requestsPerSec !== null ? requestsPerSec.toFixed(2) : hasTwoSamples ? 'not exposed' : 'collecting…'}</span>
           </div>
           <div className="card metric-card">
             <span className="label">Metric families</span>

@@ -1,11 +1,13 @@
 # Order Lifecycle — Demo UI
 
 A React + Vite demo UI for the [Order Lifecycle API](https://api.oliverhatherton.com/order-lifecycle/docs):
-JWT auth with rotating httpOnly refresh tokens, orders that move through an async
-`PENDING → RESERVED → PAID → COMPLETED` fulfilment pipeline over RabbitMQ (with a
-genuine manual pause at `RESERVED` until the user clicks **Pay**), admin user
-management, and a metrics dashboard combining the backend's live Prometheus
-`/metrics` scrape with its durable, Postgres-backed `/metrics/history`.
+JWT auth with rotating httpOnly refresh tokens, a real product catalog and cart
+that's the only way to create an order, orders that move through an async
+`PENDING → RESERVED → PAID → COMPLETED` fulfilment pipeline over RabbitMQ (with
+a genuine manual pause at `RESERVED` until the user clicks **Pay**, cancellable
+any time before that), admin user management, and a metrics dashboard combining
+the backend's live Prometheus `/metrics` scrape with its durable, Postgres-backed
+`/metrics/history`.
 
 ## Stack
 
@@ -29,9 +31,14 @@ or `http://localhost:3000` for local dev).
 | --- | --- | --- |
 | `/` | public | Landing page |
 | `/login`, `/register` | public | Auth forms |
-| `/orders` | authenticated | Place orders, watch inventory reserve, then click **Pay** to resume fulfilment to completion |
+| `/shop` | authenticated (login prompt inline otherwise) | Browse products, manage cart, checkout to create an order |
+| `/orders` | authenticated (login prompt inline otherwise) | Watch orders reserve, **Pay** or **Cancel**, through to completion |
 | `/admin` | ADMIN role | Enable/disable user accounts |
 | `/metrics` | public | Live dashboard over the backend's Prometheus scrape endpoint |
+
+`/shop` and `/orders` are always in the nav (not hidden for logged-out
+visitors); visiting either without a session shows an inline login prompt in
+place of the page content rather than a redirect.
 
 ## Auth model
 
@@ -42,7 +49,35 @@ an httpOnly cookie the browser manages automatically; every API call sends
 refresh-and-retry (see `apiRequest` in `src/lib/api.js`); a second `401` drops
 the session.
 
-## Order lifecycle & the Pay button
+**Session persistence across a reload** works the same way: on mount,
+[`AuthContext.jsx`](src/lib/AuthContext.jsx) silently calls `POST /auth/refresh`
+(the httpOnly cookie rides along) and, if that succeeds, `GET /auth/me` — so a
+valid session survives a full page reload without ever touching
+`localStorage`. If that check fails with a real `401`, the user is genuinely
+logged out. If it fails at the network/CORS level instead (the two look
+identical from the user's side — a reload that silently drops the session),
+`sessionCheckError` is set and the nav bar shows a distinct "couldn't verify
+your session — this looks like a network or CORS issue" banner with a Retry
+button, rather than presenting it as an expired login. In practice this fires
+whenever the current origin isn't in the backend's `CORS_ORIGIN` allowlist
+(e.g. running the UI against the deployed API from `localhost`, or a
+mismatch after the GitHub Pages custom-domain reset).
+
+## Shop, cart & checkout
+
+[`src/routes/Shop.jsx`](src/routes/Shop.jsx) is the only way to create an
+order — `POST /orders` doesn't exist anymore. Each product tile's quantity
+stepper always shows (and sets, not adds to) the cart's actual quantity for
+that product, matching `POST /cart/items`' upsert semantics; a stepper hits
+`DELETE /cart/items/:productId` when it reaches zero. **Checkout**
+(`POST /cart/checkout`) is one-shot — a `409` (double-click, or a stale tab)
+just re-fetches the cart, which is lazily recreated empty, rather than
+erroring. Stock is real: a product's `stock` bounds the stepper client-side,
+and the server enforces it too — a line that's gone short by the time
+inventory reserves fails the order (`FAILED`) exactly like a declined payment,
+with no separate signal to tell them apart.
+
+## Order lifecycle: Pay and Cancel
 
 [`src/routes/Orders.jsx`](src/routes/Orders.jsx) polls `GET /orders/:id` for
 any order the server is actively progressing — but an order sitting in
@@ -50,9 +85,13 @@ any order the server is actively progressing — but an order sitting in
 state, so polling stops there and a **Pay** button appears instead. Clicking
 it calls `POST /orders/:id/pay`, which resumes the async chain (payment →
 completion); polling picks the order back up automatically once
-`paymentInitiatedAt` is set. The endpoint is idempotent (an atomic claim in
-Postgres), so a `409` from a double-click or a stale button just triggers a
-re-fetch of the order's real state rather than an error.
+`paymentInitiatedAt` is set. A **Cancel** button is available any time before
+that point (`PENDING`, or `RESERVED` with no payment initiated yet) and calls
+`POST /orders/:id/cancel`, restoring stock server-side. Both endpoints are
+idempotent (atomic claims in Postgres), so a `409` from a double-click, a
+stale button, or a too-late cancel just triggers a re-fetch of the order's
+real state rather than an error. `CANCELLED` joins `COMPLETED`/`FAILED` as a
+terminal status.
 
 ## Metrics dashboard
 

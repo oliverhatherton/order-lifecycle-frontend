@@ -5,6 +5,7 @@ import { Home } from './routes/Home.jsx'
 import { Login } from './routes/Login.jsx'
 import { Register } from './routes/Register.jsx'
 import { Orders } from './routes/Orders.jsx'
+import { Shop } from './routes/Shop.jsx'
 import { Admin } from './routes/Admin.jsx'
 import { Metrics } from './routes/Metrics.jsx'
 
@@ -20,6 +21,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/shop" element={<Shop />} />
           <Route path="/orders" element={<Orders />} />
           <Route
             path="/admin"

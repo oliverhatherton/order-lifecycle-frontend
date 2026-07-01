@@ -159,7 +159,7 @@ input {
   flex: 1;
 }
 
-.top-nav .user-chip {
+.user-chip {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -352,6 +352,35 @@ input {
   background: var(--border);
 }
 
+.metrics-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+.metrics-tab {
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.metrics-tab:hover {
+  color: var(--text);
+}
+
+.metrics-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 .grid {
   display: grid;
   gap: 14px;
@@ -466,17 +495,29 @@ thead th {
   width: 100px;
 }
 
-.orders-table th:nth-child(3),
-.orders-table td:nth-child(3),
 .orders-table th:nth-child(4),
-.orders-table td:nth-child(4) {
+.orders-table td:nth-child(4),
+.orders-table th:nth-child(5),
+.orders-table td:nth-child(5) {
   width: 130px;
   white-space: nowrap;
 }
 
-.orders-table th:nth-child(5),
-.orders-table td:nth-child(5) {
-  width: 84px;
+.orders-table th:nth-child(6),
+.orders-table td:nth-child(6) {
+  width: 150px;
+}
+
+.orders-table .truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orders-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 tbody td {
@@ -540,6 +581,11 @@ tbody tr:hover {
   color: var(--danger);
 }
 
+.badge.cancelled {
+  background: var(--bg-hover);
+  color: var(--text-faint);
+}
+
 .badge.admin {
   background: var(--accent-bg);
   color: var(--accent);
@@ -589,6 +635,17 @@ tbody tr:hover {
   background: var(--accent-bg);
   border-color: rgba(91, 140, 255, 0.3);
   color: var(--accent);
+}
+
+.session-check-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 0;
+  border-radius: 0;
+  border-width: 0 0 1px;
+  padding: 10px 24px;
 }
 
 .empty-state {
@@ -788,7 +845,7 @@ details.raw-explorer pre {
 
 .live-teaser-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
 }
 
@@ -802,7 +859,7 @@ details.raw-explorer pre {
   }
 
   .live-teaser-stats {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
@@ -885,4 +942,92 @@ details.raw-explorer pre {
   font-variant-numeric: tabular-nums;
   color: var(--text);
   font-weight: 600;
+}
+
+/* ---------- Shop / cart ---------- */
+
+.shop-layout {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 20px;
+  align-items: start;
+}
+
+.product-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.product-description {
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.product-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.product-price {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.out-of-stock {
+  color: var(--danger);
+}
+
+.qty-stepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.qty-value {
+  min-width: 20px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.cart-panel {
+  position: sticky;
+  top: 76px;
+}
+
+.cart-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cart-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.cart-line-name {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .shop-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .cart-panel {
+    position: static;
+  }
 }

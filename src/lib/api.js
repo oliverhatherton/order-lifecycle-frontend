@@ -133,12 +133,25 @@ export const api = {
   me: () => apiRequest('/auth/me'),
   logout: () => setAccessToken(null),
 
-  createOrder: () => apiRequest('/orders', { method: 'POST' }),
+  // POST /orders no longer exists — an order can only be created by checking
+  // out a cart (see cart.* below).
   listOrders: () => apiRequest('/orders'),
   getOrder: (id) => apiRequest(`/orders/${id}`),
   // 409 means the order wasn't RESERVED or was already paid — the atomic
   // Postgres claim makes this safe to no-op rather than treat as a real error.
   payOrder: (id) => apiRequest(`/orders/${id}/pay`, { method: 'POST' }),
+  // 409 means the order is past the point of no return (payment already
+  // initiated, or already terminal) — treat as "too late," not an error.
+  cancelOrder: (id) => apiRequest(`/orders/${id}/cancel`, { method: 'POST' }),
+
+  listProducts: () => apiRequest('/products'),
+  getCart: () => apiRequest('/cart'),
+  // Upserts (sets, doesn't add to) a line item's quantity.
+  setCartItem: (productId, quantity) => apiRequest('/cart/items', { method: 'POST', body: { productId, quantity } }),
+  removeCartItem: (productId) => apiRequest(`/cart/items/${productId}`, { method: 'DELETE' }),
+  // The only way to create an order. One-shot: a second checkout call on the
+  // same cart gets a 409, not a duplicate order.
+  checkout: () => apiRequest('/cart/checkout', { method: 'POST' }),
 
   listUsers: () => apiRequest('/admin/users'),
   disableUser: (id) => apiRequest(`/admin/users/${id}/disable`, { method: 'PATCH' }),
