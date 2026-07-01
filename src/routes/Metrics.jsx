@@ -292,7 +292,9 @@ export function Metrics() {
       </div>
       <p className="not-exposed" style={{ marginBottom: 14 }}>
         Backed by <code>GET /metrics/history</code> — a Postgres-backed, resolution-bucketed record that survives a
-        restart, unlike the in-memory panels above.
+        restart, unlike the in-memory panels above. Omitting <code>from</code> (as below) returns the full history
+        recorded since the server started, capped at the most recent 500 buckets per resolution — not a fixed
+        lookback window.
       </p>
       {!isAuthenticated ? (
         <div className="banner info">
@@ -304,7 +306,7 @@ export function Metrics() {
       ) : (
         <div className="grid cols-2">
           <div className="card">
-            <div className="card-title">Orders completed/failed — hourly, last 24h</div>
+            <div className="card-title">Orders completed/failed — daily buckets, full history</div>
             <TrendChart
               data={ordersHistory.points.map((p) => ({ value: p.sum }))}
               dataKey="value"
@@ -315,7 +317,7 @@ export function Metrics() {
             />
           </div>
           <div className="card">
-            <div className="card-title">HTTP latency (avg) — hourly, last 24h</div>
+            <div className="card-title">HTTP latency (avg) — hourly buckets, full history</div>
             <TrendChart
               data={latencyHistory.points.map((p) => ({ value: p.avg }))}
               dataKey="value"

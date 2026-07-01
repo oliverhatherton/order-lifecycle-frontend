@@ -66,9 +66,12 @@ re-fetch of the order's real state rather than an error.
   tab has been open for.
 - **Durable history** — [`src/lib/useMetricHistory.js`](src/lib/useMetricHistory.js)
   polls `GET /metrics/history` (Postgres-backed, resolution-bucketed,
-  survives restarts) every 30s for authenticated users, charting
-  orders-per-hour and HTTP latency over the last 24h. Unauthenticated
-  visitors see a prompt to log in instead, since that endpoint requires auth.
+  survives restarts) every 30s for authenticated users, charting orders/day
+  and HTTP latency/hour. No `from` is passed, so each request returns the
+  full history recorded since the server started (not a fixed lookback
+  window), capped server-side at the most recent 500 buckets per resolution.
+  Unauthenticated visitors see a prompt to log in instead, since that
+  endpoint requires auth.
 
 Panels for metrics the backend hasn't emitted yet (or doesn't expose at all —
 e.g. RabbitMQ queue/DLQ depth, which lives in the broker's own management API,
