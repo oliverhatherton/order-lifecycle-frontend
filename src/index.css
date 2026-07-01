@@ -295,7 +295,8 @@ input {
   text-align: left;
 }
 
-.auth-card h1 {
+.auth-card h1,
+.auth-card h2 {
   font-size: 19px;
   margin-bottom: 4px;
 }
@@ -449,8 +450,33 @@ thead th {
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 0 12px 10px;
+  padding: 14px 12px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Fixed column widths so a cell's content changing (e.g. the Pay button or
+   the "awaiting payment" note appearing/disappearing) can't resize the
+   table or shift other rows. */
+.orders-table {
+  table-layout: fixed;
+}
+
+.orders-table th:nth-child(1),
+.orders-table td:nth-child(1) {
+  width: 100px;
+}
+
+.orders-table th:nth-child(3),
+.orders-table td:nth-child(3),
+.orders-table th:nth-child(4),
+.orders-table td:nth-child(4) {
+  width: 130px;
+  white-space: nowrap;
+}
+
+.orders-table th:nth-child(5),
+.orders-table td:nth-child(5) {
+  width: 84px;
 }
 
 tbody td {

@@ -11,11 +11,9 @@ export function NavBar() {
         Order Lifecycle
       </NavLink>
       <nav>
-        {isAuthenticated && (
-          <NavLink to="/orders" className={({ isActive }) => (isActive ? 'active' : '')}>
-            Orders
-          </NavLink>
-        )}
+        <NavLink to="/orders" className={({ isActive }) => (isActive ? 'active' : '')}>
+          Orders
+        </NavLink>
         {isAdmin && (
           <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
             Admin

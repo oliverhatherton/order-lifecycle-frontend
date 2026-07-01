@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api.js'
+import { useAuth } from '../lib/useAuth.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
 import { OrderStatusBadge } from '../components/OrderStatusBadge.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
@@ -27,6 +29,7 @@ function formatTime(iso) {
 }
 
 export function Orders() {
+  const { status: authStatus, isAuthenticated } = useAuth()
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -41,6 +44,10 @@ export function Orders() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      if (!isAuthenticated) {
+        if (!cancelled) setLoading(false)
+        return
+      }
       try {
         const { data } = await api.listOrders()
         if (!cancelled) setOrders(data ?? [])
@@ -53,13 +60,14 @@ export function Orders() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [isAuthenticated])
 
   // Fulfilment runs asynchronously over RabbitMQ after POST /orders (and
   // again after POST /orders/:id/pay), so we poll each order the server is
   // actively progressing until it lands on RESERVED-awaiting-pay or a
   // terminal state.
   useEffect(() => {
+    if (!isAuthenticated) return
     const interval = setInterval(async () => {
       const inFlight = ordersRef.current.filter(needsPolling)
       if (inFlight.length === 0) return
@@ -74,7 +82,7 @@ export function Orders() {
       )
     }, POLL_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [])
+  }, [isAuthenticated])
 
   async function handleCreate() {
     setCreating(true)
@@ -120,6 +128,31 @@ export function Orders() {
 
   const hasInFlight = orders.some(needsPolling)
 
+  if (authStatus === 'loading') return <CenterLoading />
+
+  if (!isAuthenticated) {
+    return (
+      <div>
+        <div className="page-header">
+          <div>
+            <h1>Orders</h1>
+            <p className="subtitle">Place orders and watch them move through the fulfilment pipeline.</p>
+          </div>
+        </div>
+        <div className="auth-card" style={{ margin: '48px auto' }}>
+          <h2>Log in to view your orders</h2>
+          <p style={{ marginBottom: 20 }}>You'll need an account to place orders and watch them progress.</p>
+          <Link to="/login" className="btn primary" style={{ width: '100%' }}>
+            Log in
+          </Link>
+          <div className="switch">
+            No account? <Link to="/register">Sign up</Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -144,7 +177,7 @@ export function Orders() {
         <div className="empty-state">No orders yet — place one to see the fulfilment pipeline run.</div>
       ) : (
         <div className="card" style={{ padding: 0 }}>
-          <table>
+          <table className="orders-table">
             <thead>
               <tr>
                 <th>Order</th>

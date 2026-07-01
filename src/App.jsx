@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { NavBar } from './components/NavBar.jsx'
-import { ProtectedRoute, AdminRoute } from './components/RouteGuards.jsx'
+import { AdminRoute } from './components/RouteGuards.jsx'
 import { Home } from './routes/Home.jsx'
 import { Login } from './routes/Login.jsx'
 import { Register } from './routes/Register.jsx'
@@ -20,14 +20,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route
-            path="/orders"
-            element={
-              <ProtectedRoute>
-                <Orders />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/orders" element={<Orders />} />
           <Route
             path="/admin"
             element={
