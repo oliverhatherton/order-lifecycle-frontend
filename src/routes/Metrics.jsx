@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   distinctLabelSets,
   formatBytes,
@@ -12,9 +13,12 @@ import {
 import { useMetricsPoller } from '../lib/useMetricsPoller.js'
 import { MetricCard } from '../components/MetricCard.jsx'
 import { BarList } from '../components/BarList.jsx'
+import { TrendChart } from '../components/TrendChart.jsx'
+import { DonutChart } from '../components/DonutChart.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
 
 const REFRESH_MS = 5000
+const HISTORY_LENGTH = 40 // ~3.3 min of context at the default 5s poll interval
 
 function formatPercent(n, digits = 1) {
   return n === null || n === undefined ? null : `${n.toFixed(digits)}%`
@@ -37,19 +41,7 @@ function emptyTextFor(families, name) {
 
 export function Metrics() {
   const { families, rawText, hasTwoSamples, lastUpdated, rate, loading, error } = useMetricsPoller(REFRESH_MS)
-
-  if (loading) return <CenterLoading />
-
-  if (error && families.size === 0) {
-    return (
-      <div>
-        <div className="page-header">
-          <h1>Metrics</h1>
-        </div>
-        <div className="banner error">Could not reach the backend's /metrics endpoint: {error}</div>
-      </div>
-    )
-  }
+  const [history, setHistory] = useState([])
 
   // ---------- System Overview ----------
   const cpuRate = hasTwoSamples ? rate('process_cpu_seconds_total') : null
@@ -122,6 +114,42 @@ export function Metrics() {
     ? sumSamples(consumerFamily, { where: (l) => /fail|error|nack|reject/i.test(l[outcomeKey] ?? '') })
     : null
 
+  // Append one point per poll tick to the rolling client-side history used by
+  // the trend charts below (the backend only exposes the current scrape).
+  useEffect(() => {
+    if (!lastUpdated) return
+    setHistory((prev) => {
+      if (prev.length && prev[prev.length - 1].t === lastUpdated) return prev
+      const point = {
+        t: lastUpdated,
+        label: new Date(lastUpdated).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' }),
+        cpu: cpuRate !== null ? cpuRate * 100 : null,
+        rss,
+        heapUsed,
+        lag: eventLoopLag !== null ? eventLoopLag * 1000 : null,
+        rps: requestsPerSec,
+        latencyMs: overallLatency ? overallLatency.avg * 1000 : null,
+        msgRate: messagesPerSec,
+      }
+      const next = [...prev, point]
+      return next.length > HISTORY_LENGTH ? next.slice(next.length - HISTORY_LENGTH) : next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastUpdated])
+
+  if (loading) return <CenterLoading />
+
+  if (error && families.size === 0) {
+    return (
+      <div>
+        <div className="page-header">
+          <h1>Metrics</h1>
+        </div>
+        <div className="banner error">Could not reach the backend's /metrics endpoint: {error}</div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -143,7 +171,7 @@ export function Metrics() {
       )}
 
       <div className="section-heading">
-        <h2>System Overview</h2>
+        <h2>System overview</h2>
         <div className="rule" />
       </div>
       <div className="grid">
@@ -152,17 +180,25 @@ export function Metrics() {
           value={formatPercent(cpuRate !== null ? cpuRate * 100 : null)}
           sub={cpuUserRate !== null ? `user ${formatPercent(cpuUserRate * 100)} · sys ${formatPercent(cpuSystemRate * 100)}` : undefined}
           emptyText={hasTwoSamples ? 'not exposed by backend' : 'collecting…'}
+          chart={<TrendChart data={history} dataKey="cpu" color="var(--accent)" formatValue={(v) => `${v.toFixed(1)}%`} />}
         />
-        <MetricCard label="Memory (RSS)" value={rss !== null ? formatBytes(rss) : null} sub={virtualMem !== null ? `${formatBytes(virtualMem)} virtual` : undefined} />
+        <MetricCard
+          label="Memory (RSS)"
+          value={rss !== null ? formatBytes(rss) : null}
+          sub={virtualMem !== null ? `${formatBytes(virtualMem)} virtual` : undefined}
+          chart={<TrendChart data={history} dataKey="rss" color="var(--warning)" formatValue={formatBytes} />}
+        />
         <MetricCard
           label="Heap"
           value={heapUsed !== null && heapTotal !== null ? formatBytes(heapUsed) : null}
           sub={heapUsed !== null && heapTotal !== null ? `of ${formatBytes(heapTotal)} (${((heapUsed / heapTotal) * 100).toFixed(0)}%)` : undefined}
+          chart={<TrendChart data={history} dataKey="heapUsed" color="var(--success)" formatValue={formatBytes} />}
         />
         <MetricCard
           label="Event loop lag"
           value={eventLoopLag !== null ? formatMs(eventLoopLag) : null}
           sub={lagP99 !== null ? `p50 ${formatMs(lagP50)} · p90 ${formatMs(lagP90)} · p99 ${formatMs(lagP99)}` : undefined}
+          chart={<TrendChart data={history} dataKey="lag" color="var(--danger)" formatValue={(v) => `${v.toFixed(1)} ms`} />}
         />
         <MetricCard label="Uptime" value={uptimeSeconds !== null ? formatDuration(uptimeSeconds) : null} />
       </div>
@@ -176,11 +212,13 @@ export function Metrics() {
           label="Requests/sec"
           value={formatRate(requestsPerSec, 'req/s')}
           emptyText={hasTwoSamples ? emptyTextFor(families, 'http_request_duration_seconds') : 'collecting…'}
+          chart={<TrendChart data={history} dataKey="rps" color="var(--accent)" formatValue={(v) => `${v.toFixed(2)} req/s`} />}
         />
         <MetricCard
           label="Latency"
           value={overallLatency ? `${(overallLatency.avg * 1000).toFixed(1)} ms avg` : null}
           sub={p95Latency !== null ? `p95 ${formatMs(p95Latency)}` : undefined}
+          chart={<TrendChart data={history} dataKey="latencyMs" color="var(--pending)" formatValue={(v) => `${v.toFixed(1)} ms`} />}
         />
         <MetricCard label="Error rate" value={formatPercent(errorRate)} sub={totalRequests > 0 ? `${errorRequests} / ${totalRequests} requests` : undefined} />
       </div>
@@ -196,22 +234,24 @@ export function Metrics() {
       </div>
 
       <div className="section-heading">
-        <h2>Order Processing</h2>
+        <h2>Order processing</h2>
         <div className="rule" />
       </div>
-      <div className="grid">
-        <MetricCard label="Orders created" value={null} emptyText="not exposed by backend" />
-        <MetricCard label="Orders completed" value={completedOrders} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
-        <MetricCard label="Orders failed" value={failedOrders} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
-        <MetricCard label="Processing duration" value={null} emptyText="not exposed by backend" />
-      </div>
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="card-title">Current state distribution</div>
-        <BarList rows={stateDistribution} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
-        <p className="not-exposed" style={{ marginTop: 10 }}>
-          Only terminal states (COMPLETED / FAILED) are exposed via <code>orders_terminal_total</code>; live
-          PENDING / RESERVED / PAID counts aren't published as a metric.
-        </p>
+      <div className="grid cols-2">
+        <div className="card">
+          <div className="card-title">Current state distribution</div>
+          <DonutChart rows={stateDistribution} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
+          <p className="not-exposed" style={{ marginTop: 10 }}>
+            Only terminal states (COMPLETED / FAILED) are exposed via <code>orders_terminal_total</code>; live
+            PENDING / RESERVED / PAID counts aren't published as a metric.
+          </p>
+        </div>
+        <div className="grid" style={{ alignContent: 'start' }}>
+          <MetricCard label="Orders created" value={null} emptyText="not exposed by backend" />
+          <MetricCard label="Orders completed" value={completedOrders} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
+          <MetricCard label="Orders failed" value={failedOrders} emptyText={emptyTextFor(families, 'orders_terminal_total')} />
+          <MetricCard label="Processing duration" value={null} emptyText="not exposed by backend" />
+        </div>
       </div>
 
       <div className="section-heading">
@@ -223,6 +263,7 @@ export function Metrics() {
           label="Messages/sec"
           value={formatRate(messagesPerSec, 'msg/s')}
           emptyText={hasTwoSamples ? emptyTextFor(families, 'consumer_messages_total') : 'collecting…'}
+          chart={<TrendChart data={history} dataKey="msgRate" color="var(--accent)" formatValue={(v) => `${v.toFixed(2)} msg/s`} />}
         />
         <MetricCard label="Consumer success rate" value={formatPercent(successRate)} emptyText={emptyTextFor(families, 'consumer_messages_total')} />
         <MetricCard label="Retry count" value={retryMessages} emptyText={emptyTextFor(families, 'consumer_messages_total')} />
@@ -233,7 +274,7 @@ export function Metrics() {
       {outcomeRows.length > 0 && (
         <div className="card" style={{ marginTop: 14 }}>
           <div className="card-title">Messages by outcome</div>
-          <BarList rows={outcomeRows} />
+          <DonutChart rows={outcomeRows} />
         </div>
       )}
 
