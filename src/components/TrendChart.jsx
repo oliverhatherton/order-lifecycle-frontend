@@ -16,12 +16,12 @@ function TrendTooltip({ active, payload, formatValue, label }) {
  * samples. There's no history API on the backend (only the current scrape),
  * so this is only ever as deep as the window this browser tab has been open.
  */
-export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue, height = 64 }) {
+export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue, height = 64, emptyText = 'collecting…' }) {
   const hasData = data.some((d) => d[dataKey] !== null && d[dataKey] !== undefined)
   if (!hasData) {
     return (
       <div className="trend-chart-empty" style={{ height }}>
-        collecting…
+        {emptyText}
       </div>
     )
   }

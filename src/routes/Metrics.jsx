@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   distinctLabelSets,
   formatBytes,
@@ -11,6 +12,8 @@ import {
   sumSamples,
 } from '../lib/prometheus.js'
 import { useMetricsPoller } from '../lib/useMetricsPoller.js'
+import { useMetricHistory } from '../lib/useMetricHistory.js'
+import { useAuth } from '../lib/useAuth.js'
 import { MetricCard } from '../components/MetricCard.jsx'
 import { BarList } from '../components/BarList.jsx'
 import { TrendChart } from '../components/TrendChart.jsx'
@@ -42,6 +45,9 @@ function emptyTextFor(families, name) {
 export function Metrics() {
   const { families, rawText, hasTwoSamples, lastUpdated, rate, loading, error } = useMetricsPoller(REFRESH_MS)
   const [history, setHistory] = useState([])
+  const { isAuthenticated } = useAuth()
+  const ordersHistory = useMetricHistory('orders_terminal', '1d', { enabled: isAuthenticated })
+  const latencyHistory = useMetricHistory('http_request_duration_ms', '1h', { enabled: isAuthenticated })
 
   // ---------- System Overview ----------
   const cpuRate = hasTwoSamples ? rate('process_cpu_seconds_total') : null
@@ -118,6 +124,8 @@ export function Metrics() {
   // the trend charts below (the backend only exposes the current scrape).
   useEffect(() => {
     if (!lastUpdated) return
+    // Accumulating polled snapshots into a rolling buffer has no non-effect equivalent here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHistory((prev) => {
       if (prev.length && prev[prev.length - 1].t === lastUpdated) return prev
       const point = {
@@ -275,6 +283,48 @@ export function Metrics() {
         <div className="card" style={{ marginTop: 14 }}>
           <div className="card-title">Messages by outcome</div>
           <DonutChart rows={outcomeRows} />
+        </div>
+      )}
+
+      <div className="section-heading">
+        <h2>History</h2>
+        <div className="rule" />
+      </div>
+      <p className="not-exposed" style={{ marginBottom: 14 }}>
+        Backed by <code>GET /metrics/history</code> — a Postgres-backed, resolution-bucketed record that survives a
+        restart, unlike the in-memory panels above.
+      </p>
+      {!isAuthenticated ? (
+        <div className="banner info">
+          <Link to="/login" className="nav-link" style={{ padding: 0 }}>
+            Log in
+          </Link>{' '}
+          to view durable history — <code>/metrics/history</code> requires authentication.
+        </div>
+      ) : (
+        <div className="grid cols-2">
+          <div className="card">
+            <div className="card-title">Orders completed/failed — hourly, last 24h</div>
+            <TrendChart
+              data={ordersHistory.points.map((p) => ({ value: p.sum }))}
+              dataKey="value"
+              color="var(--success)"
+              formatValue={(v) => `${v} order${v === 1 ? '' : 's'}`}
+              height={120}
+              emptyText={ordersHistory.loading ? 'loading…' : ordersHistory.error ? 'failed to load' : 'no orders recorded yet'}
+            />
+          </div>
+          <div className="card">
+            <div className="card-title">HTTP latency (avg) — hourly, last 24h</div>
+            <TrendChart
+              data={latencyHistory.points.map((p) => ({ value: p.avg }))}
+              dataKey="value"
+              color="var(--pending)"
+              formatValue={(v) => `${v.toFixed(1)} ms`}
+              height={120}
+              emptyText={latencyHistory.loading ? 'loading…' : latencyHistory.error ? 'failed to load' : 'no requests recorded yet'}
+            />
+          </div>
         </div>
       )}
 

@@ -715,6 +715,18 @@ details.raw-explorer pre {
   gap: 10px;
 }
 
+.pipeline-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pipeline-gate {
+  font-size: 11px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+
 .pipeline-arrow {
   color: var(--text-faint);
   font-size: 14px;

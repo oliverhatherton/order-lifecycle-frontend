@@ -1,11 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../lib/api.js'
+import { api, ApiError } from '../lib/api.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
 import { OrderStatusBadge } from '../components/OrderStatusBadge.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED'])
 const POLL_INTERVAL_MS = 1200
+
+// RESERVED is a genuine pause — nothing advances an order past it until the
+// user clicks "Pay" (POST /orders/:id/pay). Only poll orders that the server
+// is actively moving: PENDING (still reserving) or RESERVED-with-payment-
+// initiated (payment/fulfilment running after a Pay click).
+function needsPolling(order) {
+  if (TERMINAL_STATUSES.has(order.status)) return false
+  if (order.status === 'RESERVED' && !order.paymentInitiatedAt) return false
+  return true
+}
+
+function awaitingPay(order) {
+  return order.status === 'RESERVED' && !order.paymentInitiatedAt
+}
 
 function formatTime(iso) {
   if (!iso) return '—'
@@ -16,6 +30,7 @@ export function Orders() {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [payingIds, setPayingIds] = useState(() => new Set())
   const [error, setError] = useState(null)
   const ordersRef = useRef(orders)
 
@@ -40,11 +55,13 @@ export function Orders() {
     }
   }, [])
 
-  // Fulfilment runs asynchronously over RabbitMQ after POST /orders returns,
-  // so we poll each non-terminal order until it lands on COMPLETED or FAILED.
+  // Fulfilment runs asynchronously over RabbitMQ after POST /orders (and
+  // again after POST /orders/:id/pay), so we poll each order the server is
+  // actively progressing until it lands on RESERVED-awaiting-pay or a
+  // terminal state.
   useEffect(() => {
     const interval = setInterval(async () => {
-      const inFlight = ordersRef.current.filter((o) => !TERMINAL_STATUSES.has(o.status))
+      const inFlight = ordersRef.current.filter(needsPolling)
       if (inFlight.length === 0) return
       const results = await Promise.allSettled(inFlight.map((o) => api.getOrder(o.id)))
       setOrders((prev) =>
@@ -72,7 +89,36 @@ export function Orders() {
     }
   }
 
-  const hasInFlight = orders.some((o) => !TERMINAL_STATUSES.has(o.status))
+  async function handlePay(orderId) {
+    setPayingIds((prev) => new Set(prev).add(orderId))
+    setError(null)
+    try {
+      const { data } = await api.payOrder(orderId)
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
+    } catch (err) {
+      // 409 = order wasn't RESERVED, or payment was already initiated (e.g. a
+      // double-click, or another tab beat us to it) — not a real error, just
+      // re-sync with the server so polling picks up wherever it actually is.
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const { data } = await api.getOrder(orderId)
+          setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
+        } catch (refetchErr) {
+          setError(refetchErr)
+        }
+      } else {
+        setError(err)
+      }
+    } finally {
+      setPayingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(orderId)
+        return next
+      })
+    }
+  }
+
+  const hasInFlight = orders.some(needsPolling)
 
   return (
     <div>
@@ -80,8 +126,9 @@ export function Orders() {
         <div>
           <h1>Orders</h1>
           <p className="subtitle">
-            Placing an order returns immediately as <code>PENDING</code>; inventory, payment and completion run
-            asynchronously and are reflected here as they land.
+            Placing an order returns immediately as <code>PENDING</code>; inventory reservation runs asynchronously
+            and pauses at <code>RESERVED</code> until you click <strong>Pay</strong> — nothing charges or completes
+            before that.
           </p>
         </div>
         <button type="button" className="btn primary" onClick={handleCreate} disabled={creating}>
@@ -104,20 +151,31 @@ export function Orders() {
                 <th>Status</th>
                 <th>Created</th>
                 <th>Updated</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {orders.map((order) => {
-                const inFlight = !TERMINAL_STATUSES.has(order.status)
+                const polling = needsPolling(order)
+                const readyToPay = awaitingPay(order)
+                const paying = payingIds.has(order.id)
                 return (
                   <tr key={order.id}>
                     <td className="mono">{order.id.slice(0, 8)}</td>
                     <td>
                       <OrderStatusBadge status={order.status} />
-                      {inFlight && <span className="live-dot" style={{ marginLeft: 8 }} title="Polling for updates" />}
+                      {polling && <span className="live-dot" style={{ marginLeft: 8 }} title="Polling for updates" />}
+                      {readyToPay && <span className="not-exposed" style={{ marginLeft: 8 }}>awaiting payment</span>}
                     </td>
                     <td>{formatTime(order.createdAt)}</td>
                     <td>{formatTime(order.updatedAt)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {readyToPay && (
+                        <button type="button" className="btn small primary" disabled={paying} onClick={() => handlePay(order.id)}>
+                          {paying ? 'Paying…' : 'Pay'}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )
               })}

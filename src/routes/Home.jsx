@@ -11,8 +11,8 @@ const FEATURES = [
     body: 'Short-lived access tokens live in memory only; the refresh token is an httpOnly cookie the browser manages. Reuse of a stolen refresh token revokes the whole family.',
   },
   {
-    title: 'Async fulfilment',
-    body: 'Placing an order returns immediately. Inventory, payment and completion run in the background over RabbitMQ, and the UI polls until the order lands on a terminal state.',
+    title: 'Async fulfilment, with one manual gate',
+    body: 'Placing an order reserves inventory automatically over RabbitMQ. It then genuinely pauses at RESERVED — nothing charges or completes until you click Pay, which resumes the chain.',
   },
   {
     title: 'Role-based admin',
@@ -59,6 +59,7 @@ export function Home() {
             <div className="pipeline-step" key={step}>
               <div className="pipeline-node">
                 <span className={`badge ${step.toLowerCase()}`}>{step}</span>
+                {step === 'RESERVED' && <span className="pipeline-gate">⏸ waits for Pay</span>}
               </div>
               {i < PIPELINE.length - 1 && <span className="pipeline-arrow">→</span>}
             </div>

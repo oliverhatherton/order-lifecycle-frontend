@@ -2,9 +2,10 @@
 
 A React + Vite demo UI for the [Order Lifecycle API](https://api.oliverhatherton.com/order-lifecycle/docs):
 JWT auth with rotating httpOnly refresh tokens, orders that move through an async
-`PENDING → RESERVED → PAID → COMPLETED` fulfilment pipeline over RabbitMQ, admin
-user management, and a public live-metrics dashboard reading the backend's
-Prometheus `/metrics` endpoint.
+`PENDING → RESERVED → PAID → COMPLETED` fulfilment pipeline over RabbitMQ (with a
+genuine manual pause at `RESERVED` until the user clicks **Pay**), admin user
+management, and a metrics dashboard combining the backend's live Prometheus
+`/metrics` scrape with its durable, Postgres-backed `/metrics/history`.
 
 ## Stack
 
@@ -28,7 +29,7 @@ or `http://localhost:3000` for local dev).
 | --- | --- | --- |
 | `/` | public | Landing page |
 | `/login`, `/register` | public | Auth forms |
-| `/orders` | authenticated | Place orders, watch fulfilment status poll to completion |
+| `/orders` | authenticated | Place orders, watch inventory reserve, then click **Pay** to resume fulfilment to completion |
 | `/admin` | ADMIN role | Enable/disable user accounts |
 | `/metrics` | public | Live dashboard over the backend's Prometheus scrape endpoint |
 
@@ -41,17 +42,39 @@ an httpOnly cookie the browser manages automatically; every API call sends
 refresh-and-retry (see `apiRequest` in `src/lib/api.js`); a second `401` drops
 the session.
 
+## Order lifecycle & the Pay button
+
+[`src/routes/Orders.jsx`](src/routes/Orders.jsx) polls `GET /orders/:id` for
+any order the server is actively progressing — but an order sitting in
+`RESERVED` with no `paymentInitiatedAt` is a genuine pause, not a transient
+state, so polling stops there and a **Pay** button appears instead. Clicking
+it calls `POST /orders/:id/pay`, which resumes the async chain (payment →
+completion); polling picks the order back up automatically once
+`paymentInitiatedAt` is set. The endpoint is idempotent (an atomic claim in
+Postgres), so a `409` from a double-click or a stale button just triggers a
+re-fetch of the order's real state rather than an error.
+
 ## Metrics dashboard
 
-[`src/routes/Metrics.jsx`](src/routes/Metrics.jsx) polls the backend's raw
-`/metrics` text output every 5s. [`src/lib/prometheus.js`](src/lib/prometheus.js)
-is a small generic Prometheus exposition-format parser (no query API is
-exposed by the backend, so rates like requests/sec are computed client-side by
-diffing two successive scrapes). Panels for metrics the backend hasn't emitted
-yet (or doesn't expose at all — e.g. RabbitMQ queue/DLQ depth, which lives in
-the broker's own management API, not this app) show an honest empty state
-instead of a fabricated number. A raw-text explorer at the bottom of the page
-covers anything not surfaced as a dedicated panel.
+[`src/routes/Metrics.jsx`](src/routes/Metrics.jsx) combines two sources:
+
+- **Live scrape** — polls the backend's raw `/metrics` text output every 5s.
+  [`src/lib/prometheus.js`](src/lib/prometheus.js) is a small generic
+  Prometheus exposition-format parser (rates like requests/sec are computed
+  client-side by diffing two successive scrapes). This resets on a backend
+  restart, and the trend charts here only cover whatever window this browser
+  tab has been open for.
+- **Durable history** — [`src/lib/useMetricHistory.js`](src/lib/useMetricHistory.js)
+  polls `GET /metrics/history` (Postgres-backed, resolution-bucketed,
+  survives restarts) every 30s for authenticated users, charting
+  orders-per-hour and HTTP latency over the last 24h. Unauthenticated
+  visitors see a prompt to log in instead, since that endpoint requires auth.
+
+Panels for metrics the backend hasn't emitted yet (or doesn't expose at all —
+e.g. RabbitMQ queue/DLQ depth, which lives in the broker's own management API,
+not this app) show an honest empty state instead of a fabricated number. A
+raw-text explorer at the bottom of the page covers anything not surfaced as a
+dedicated panel.
 
 ## Deployment
 

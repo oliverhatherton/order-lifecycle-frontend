@@ -136,10 +136,22 @@ export const api = {
   createOrder: () => apiRequest('/orders', { method: 'POST' }),
   listOrders: () => apiRequest('/orders'),
   getOrder: (id) => apiRequest(`/orders/${id}`),
+  // 409 means the order wasn't RESERVED or was already paid — the atomic
+  // Postgres claim makes this safe to no-op rather than treat as a real error.
+  payOrder: (id) => apiRequest(`/orders/${id}/pay`, { method: 'POST' }),
 
   listUsers: () => apiRequest('/admin/users'),
   disableUser: (id) => apiRequest(`/admin/users/${id}/disable`, { method: 'PATCH' }),
   enableUser: (id) => apiRequest(`/admin/users/${id}/enable`, { method: 'PATCH' }),
+
+  // Durable, resolution-bucketed history (Postgres-backed, survives restarts) —
+  // distinct from the in-memory Prometheus /metrics scrape. Requires auth.
+  metricsHistory: (metric, { resolution = 'raw', from, to } = {}) => {
+    const params = new URLSearchParams({ metric, resolution })
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    return apiRequest(`/metrics/history?${params.toString()}`)
+  },
 }
 
 export { API_BASE }
