@@ -236,17 +236,19 @@ export function Orders() {
                     </td>
                     <td>{formatTime(order.createdAt)}</td>
                     <td>{formatTime(order.updatedAt)}</td>
-                    <td className="orders-actions">
-                      {readyToPay && (
-                        <button type="button" className="btn small primary" disabled={paying || canceling} onClick={() => handlePay(order.id)}>
-                          {paying ? 'Paying…' : 'Pay'}
-                        </button>
-                      )}
-                      {cancelable && (
-                        <button type="button" className="btn small danger" disabled={paying || canceling} onClick={() => handleCancel(order.id)}>
-                          {canceling ? '…' : 'Cancel'}
-                        </button>
-                      )}
+                    <td>
+                      <div className="orders-actions">
+                        {readyToPay && (
+                          <button type="button" className="btn small primary" disabled={paying || canceling} onClick={() => handlePay(order.id)}>
+                            {paying ? 'Paying…' : 'Pay'}
+                          </button>
+                        )}
+                        {cancelable && (
+                          <button type="button" className="btn small danger" disabled={paying || canceling} onClick={() => handleCancel(order.id)}>
+                            {canceling ? '…' : 'Cancel'}
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )

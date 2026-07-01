@@ -516,8 +516,17 @@ thead th {
 
 .orders-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Keeps every row the same height regardless of whether it has 0, 1 or 2
+   action buttons — otherwise terminal-status rows (no buttons) are visibly
+   shorter than in-flight rows, making the table look jagged. */
+.orders-table tbody td {
+  height: 52px;
+  box-sizing: border-box;
 }
 
 tbody td {
