@@ -1,0 +1,46 @@
+name: Deploy
+
+# Builds the Vite app and publishes dist/ to the `prod` branch, which is
+# configured as the GitHub Pages source (Settings → Pages → Deploy from a
+# branch → `prod` / root). base: './' + HashRouter mean the same build works
+# whether Pages serves it from a custom domain or a project subpath.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: https://api.oliverhatherton.com/order-lifecycle
+
+      - name: Publish to prod branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: prod
+          force_orphan: true
