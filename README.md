@@ -118,6 +118,36 @@ not this app) show an honest empty state instead of a fabricated number. A
 raw-text explorer at the bottom of the page covers anything not surfaced as a
 dedicated panel.
 
+The dashboard is organized into five tabs: System Overview, API, Order
+Processing, Messaging, and **Spike Correlation**.
+
+### Spike Correlation
+
+Overlays request volume, latency, event loop lag and CPU on one timeline
+(recharts `ComposedChart`, bars on the left axis for requests/bucket, lines on
+the right for ms/%) so a spike in one series can be visually correlated
+against the others, plus a heap-used trend below. All backed by durable
+`/metrics/history`, with a bucket-resolution selector (`1m`/`5m`/`15m`/`1h` —
+wider resolutions trade granularity for a longer span, per the 500-bucket
+cap). [`src/lib/metricsCorrelation.js`](src/lib/metricsCorrelation.js) joins
+the five underlying series (`http_request_duration_ms` doubles as both the
+traffic and latency series) into one row per bucket, and — this is the part
+worth understanding before changing it — applies two *different* fill
+strategies:
+
+- **Traffic** (request count): a missing bucket means zero requests, which is
+  real data, so it's zero-filled.
+- **Gauges** (lag, CPU, heap): a missing bucket means the server was down for
+  that window, so it's left as `null` and rendered as a genuine gap
+  (`connectNulls={false}` throughout) rather than interpolated — durable
+  history means downtime visualization comes for free, as long as nothing
+  papers over the gap.
+
+The master bucket timeline is the union of the gauge series (recorded on a
+timer regardless of traffic), not the traffic series — otherwise a bucket with
+zero requests but a live server would be indistinguishable from real
+downtime.
+
 ## Deployment
 
 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) builds on every

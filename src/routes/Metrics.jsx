@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   distinctLabelSets,
@@ -11,6 +11,7 @@ import {
   scalarValue,
   sumSamples,
 } from '../lib/prometheus.js'
+import { buildCorrelationRows } from '../lib/metricsCorrelation.js'
 import { useMetricsPoller } from '../lib/useMetricsPoller.js'
 import { useMetricHistory } from '../lib/useMetricHistory.js'
 import { useAuth } from '../lib/useAuth.js'
@@ -18,6 +19,7 @@ import { MetricCard } from '../components/MetricCard.jsx'
 import { BarList } from '../components/BarList.jsx'
 import { TrendChart } from '../components/TrendChart.jsx'
 import { DonutChart } from '../components/DonutChart.jsx'
+import { CorrelationChart } from '../components/CorrelationChart.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
 
 const REFRESH_MS = 5000
@@ -28,6 +30,14 @@ const TABS = [
   { key: 'api', label: 'API' },
   { key: 'orders', label: 'Order Processing' },
   { key: 'messaging', label: 'Messaging' },
+  { key: 'correlation', label: 'Spike Correlation' },
+]
+
+const CORRELATION_RESOLUTIONS = [
+  { value: '1m', label: '1m buckets — ~8h span' },
+  { value: '5m', label: '5m buckets — ~41h span' },
+  { value: '15m', label: '15m buckets — ~5d span' },
+  { value: '1h', label: '1h buckets — ~3wk span' },
 ]
 
 function formatPercent(n, digits = 1) {
@@ -67,6 +77,31 @@ export function Metrics() {
   const { isAuthenticated } = useAuth()
   const ordersHistory = useMetricHistory('orders_terminal', '1d', { enabled: isAuthenticated })
   const latencyHistory = useMetricHistory('http_request_duration_ms', '1h', { enabled: isAuthenticated })
+
+  // ---------- Spike Correlation ----------
+  const [correlationResolution, setCorrelationResolution] = useState('5m')
+  const correlationEnabled = isAuthenticated && tab === 'correlation'
+  // http_request_duration_ms doubles as both the traffic (count) and latency
+  // (avg/max) series — one fetch, two fields.
+  const corrTraffic = useMetricHistory('http_request_duration_ms', correlationResolution, { enabled: correlationEnabled })
+  const corrLagAvg = useMetricHistory('event_loop_lag_ms', correlationResolution, { enabled: correlationEnabled })
+  const corrLagMax = useMetricHistory('event_loop_lag_max_ms', correlationResolution, { enabled: correlationEnabled })
+  const corrCpu = useMetricHistory('cpu_percent', correlationResolution, { enabled: correlationEnabled })
+  const corrHeap = useMetricHistory('memory_heap_used_bytes', correlationResolution, { enabled: correlationEnabled })
+  const correlationLoading = corrTraffic.loading || corrLagAvg.loading || corrLagMax.loading || corrCpu.loading || corrHeap.loading
+  const correlationError = corrTraffic.error || corrLagAvg.error || corrLagMax.error || corrCpu.error || corrHeap.error
+  const correlationRows = useMemo(
+    () =>
+      buildCorrelationRows({
+        traffic: corrTraffic.points,
+        latency: corrTraffic.points,
+        lagAvg: corrLagAvg.points,
+        lagMax: corrLagMax.points,
+        cpu: corrCpu.points,
+        heap: corrHeap.points,
+      }),
+    [corrTraffic.points, corrLagAvg.points, corrLagMax.points, corrCpu.points, corrHeap.points],
+  )
 
   // ---------- System Overview ----------
   const cpuRate = hasTwoSamples ? rate('process_cpu_seconds_total') : null
@@ -348,6 +383,59 @@ export function Metrics() {
               <div className="card-title">Messages by outcome</div>
               <DonutChart rows={outcomeRows} />
             </div>
+          )}
+        </>
+      )}
+
+      {tab === 'correlation' && (
+        <>
+          <div className="page-header" style={{ marginBottom: 14, alignItems: 'flex-end' }}>
+            <p className="subtitle" style={{ maxWidth: 560 }}>
+              Overlays request volume, latency, event loop lag and CPU on one timeline so spikes can be visually
+              correlated. Backed by <code>/metrics/history</code> — durable, survives restarts.
+            </p>
+            <select
+              className="select-small"
+              value={correlationResolution}
+              onChange={(e) => setCorrelationResolution(e.target.value)}
+              aria-label="Bucket resolution"
+            >
+              {CORRELATION_RESOLUTIONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {!isAuthenticated ? (
+            <DurableHistoryLoginPrompt />
+          ) : (
+            <>
+              <div className="card">
+                <div className="card-title">
+                  Traffic, latency, lag &amp; CPU
+                  <span className="not-exposed">{correlationLoading ? 'loading…' : correlationError ? 'failed to load' : `${correlationRows.length} buckets`}</span>
+                </div>
+                <CorrelationChart data={correlationRows} />
+              </div>
+              <div className="card" style={{ marginTop: 14 }}>
+                <div className="card-title">Heap used (avg)</div>
+                <TrendChart
+                  data={correlationRows}
+                  dataKey="heapBytes"
+                  color="var(--success)"
+                  formatValue={formatBytes}
+                  height={100}
+                  connectNulls={false}
+                  emptyText={correlationLoading ? 'loading…' : correlationError ? 'failed to load' : 'no data yet'}
+                />
+              </div>
+              <p className="not-exposed" style={{ marginTop: 10 }}>
+                Quiet buckets (zero requests) are real data, shown as 0 on the traffic bars. Gaps in the lag / CPU /
+                heap lines mean the server was down for that bucket — they're breaks, not interpolated.
+              </p>
+            </>
           )}
         </>
       )}

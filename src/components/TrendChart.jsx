@@ -16,7 +16,7 @@ function TrendTooltip({ active, payload, formatValue, label }) {
  * samples. There's no history API on the backend (only the current scrape),
  * so this is only ever as deep as the window this browser tab has been open.
  */
-export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue, height = 64, emptyText = 'collecting…' }) {
+export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue, height = 64, emptyText = 'collecting…', connectNulls = true }) {
   const hasData = data.some((d) => d[dataKey] !== null && d[dataKey] !== undefined)
   if (!hasData) {
     return (
@@ -51,7 +51,7 @@ export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue
             strokeWidth={1.75}
             fill={`url(#${gradientId})`}
             isAnimationActive={false}
-            connectNulls
+            connectNulls={connectNulls}
           />
         </AreaChart>
       </ResponsiveContainer>
