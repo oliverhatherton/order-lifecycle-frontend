@@ -29,6 +29,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { httpStatusText } from '@/lib/httpStatus'
 import { formatLatency, latencyParts, stageRange } from '@/lib/format'
 
 const REFRESH_MS = 5000
@@ -612,7 +613,7 @@ export function Metrics() {
               )}
             </Panel>
             <Panel title="Status codes">
-              <BarList rows={statusCodeRows} emptyText={emptyTextFor(families, HTTP)} />
+              <BarList rows={statusCodeRows} describe={httpStatusText} emptyText={emptyTextFor(families, HTTP)} />
             </Panel>
           </div>
         </div>
