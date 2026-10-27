@@ -67,9 +67,16 @@ mismatch after the GitHub Pages custom-domain reset).
 
 [`src/routes/Shop.jsx`](src/routes/Shop.jsx) is the only way to create an
 order — `POST /orders` doesn't exist anymore. Each product tile's quantity
-stepper always shows (and sets, not adds to) the cart's actual quantity for
-that product, matching `POST /cart/items`' upsert semantics; a stepper hits
-`DELETE /cart/items/:productId` when it reaches zero. **Checkout**
+stepper sets (not adds to) the cart's quantity for that product, matching
+`POST /cart/items`' upsert semantics; a stepper hits
+`DELETE /cart/items/:productId` when it reaches zero. Taps are optimistic
+(see [`useCartEditor`](src/lib/useCartEditor.js)): the new quantity shows
+immediately, taps on one product are batched over ~250 ms into a single
+request carrying the final quantity (or sent as soon as that product's
+in-flight request returns), and the cart each response carries is used
+directly instead of re-fetching it. A failed request snaps that product back to
+the server's value and shows the error; checkout sends any unsent changes
+first. **Checkout**
 (`POST /cart/checkout`) is one-shot — a `409` (double-click, or a stale tab)
 just re-fetches the cart, which is lazily recreated empty, rather than
 erroring. Stock is real: a product's `stock` bounds the stepper client-side,

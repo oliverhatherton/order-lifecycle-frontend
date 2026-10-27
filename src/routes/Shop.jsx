@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
+import { useCartEditor } from '../lib/useCartEditor.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
 import { SignInGate } from '../components/SignInGate.jsx'
@@ -14,36 +15,15 @@ import { Minus, Plus, X } from 'lucide-react'
 /** At or below this many units a product is flagged as running low (matches the backend's replenishment threshold). */
 const LOW_STOCK = 10
 
-function quantityInCart(cart, productId) {
-  return cart?.items?.find((i) => i.productId === productId)?.quantity ?? 0
-}
-
 export function Shop() {
   const { status: authStatus, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const [products, setProducts] = useState([])
-  const [cart, setCart] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [pendingIds, setPendingIds] = useState(() => new Set())
   const [checkingOut, setCheckingOut] = useState(false)
   const [checkoutNotice, setCheckoutNotice] = useState(null)
-
-  const withPending = useCallback((id, fn) => {
-    setPendingIds((prev) => new Set(prev).add(id))
-    return fn().finally(() => {
-      setPendingIds((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    })
-  }, [])
-
-  const refetchCart = useCallback(async () => {
-    const { data } = await api.getCart()
-    setCart(data)
-  }, [])
+  const { cart, setCart, quantityOf, overrides, setQuantity, flush } = useCartEditor({ onError: setError })
 
   useEffect(() => {
     let cancelled = false
@@ -66,22 +46,11 @@ export function Shop() {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, setCart])
 
-  async function handleSetQuantity(productId, quantity) {
+  function handleSetQuantity(product, quantity) {
     setError(null)
-    await withPending(productId, async () => {
-      try {
-        if (quantity <= 0) {
-          await api.removeCartItem(productId)
-        } else {
-          await api.setCartItem(productId, quantity)
-        }
-        await refetchCart()
-      } catch (err) {
-        setError(err)
-      }
-    })
+    setQuantity(product.id, Math.min(Math.max(quantity, 0), product.stock))
   }
 
   async function handleCheckout() {
@@ -89,6 +58,8 @@ export function Shop() {
     setError(null)
     setCheckoutNotice(null)
     try {
+      // Unsent quantity changes go first, so the order matches what's shown.
+      if (!(await flush())) return
       const { data } = await api.checkout()
       navigate('/orders', { state: { justCheckedOut: data?.id } })
     } catch (err) {
@@ -97,7 +68,8 @@ export function Shop() {
         // GET /cart lazily starts a fresh one, not a real error.
         setCheckoutNotice('That cart was already checked out, so a new one has been started.')
         try {
-          await refetchCart()
+          const { data } = await api.getCart()
+          setCart(data)
         } catch (refetchErr) {
           setError(refetchErr)
         }
@@ -120,7 +92,16 @@ export function Shop() {
     )
   }
 
-  const cartLines = cart?.items ?? []
+  // The server's cart with unconfirmed quantities applied, so the panel
+  // matches the steppers while requests are pending.
+  const cartLines = (cart?.items ?? [])
+    .map((item) => ({ ...item, quantity: quantityOf(item.productId) }))
+    .concat(
+      [...overrides.keys()]
+        .filter((id) => !cart?.items?.some((i) => i.productId === id))
+        .map((id) => ({ productId: id, productName: products.find((p) => p.id === id)?.name ?? '', quantity: quantityOf(id) })),
+    )
+    .filter((item) => item.quantity > 0)
   const cartUnits = cartLines.reduce((acc, i) => acc + i.quantity, 0)
   const maxStock = Math.max(...products.map((p) => p.stock), 1)
   const lowCount = products.filter((p) => p.stock > 0 && p.stock <= LOW_STOCK).length
@@ -157,8 +138,7 @@ export function Shop() {
               </TableHeader>
               <TableBody>
                 {products.map((product) => {
-                  const qty = quantityInCart(cart, product.id)
-                  const pending = pendingIds.has(product.id)
+                  const qty = quantityOf(product.id)
                   const outOfStock = product.stock === 0
                   const low = product.stock <= LOW_STOCK
                   return (
@@ -183,18 +163,18 @@ export function Shop() {
                           <Button
                             variant="ghost"
                             size="icon-sm"
-                            disabled={pending || qty <= 0}
-                            onClick={() => handleSetQuantity(product.id, qty - 1)}
+                            disabled={checkingOut || qty <= 0}
+                            onClick={() => handleSetQuantity(product, qty - 1)}
                             aria-label={`Remove one ${product.name}`}
                           >
                             <Minus />
                           </Button>
-                          <span className="min-w-7 text-center text-[13px] tabular">{pending ? '…' : qty}</span>
+                          <span className="min-w-7 text-center text-[13px] tabular">{qty}</span>
                           <Button
                             variant="ghost"
                             size="icon-sm"
-                            disabled={pending || outOfStock || qty >= product.stock}
-                            onClick={() => handleSetQuantity(product.id, qty + 1)}
+                            disabled={checkingOut || qty >= product.stock}
+                            onClick={() => handleSetQuantity(product, qty + 1)}
                             aria-label={`Add one ${product.name}`}
                           >
                             <Plus />
@@ -223,8 +203,11 @@ export function Shop() {
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      disabled={pendingIds.has(item.productId)}
-                      onClick={() => handleSetQuantity(item.productId, 0)}
+                      disabled={checkingOut}
+                      onClick={() => {
+                        setError(null)
+                        setQuantity(item.productId, 0)
+                      }}
                       aria-label={`Remove ${item.productName} from cart`}
                     >
                       <X />
