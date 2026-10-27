@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
+import { SignInGate } from '../components/SignInGate.jsx'
+import { EmptyState, PageHeader, Panel } from '../components/Panel.jsx'
+import { Button } from '@/components/ui/button'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { cn } from '@/lib/utils'
+import { Minus, Plus, X } from 'lucide-react'
 
-function formatPrice(price) {
-  const n = Number(price)
-  return Number.isFinite(n) ? `$${n.toFixed(2)}` : '—'
-}
+/** At or below this many units a product is flagged as running low (matches the backend's replenishment threshold). */
+const LOW_STOCK = 10
 
 function quantityInCart(cart, productId) {
   return cart?.items?.find((i) => i.productId === productId)?.quantity ?? 0
@@ -91,7 +95,7 @@ export function Shop() {
       if (err instanceof ApiError && err.status === 409) {
         // This cart was already checked out (e.g. a double-click race) —
         // GET /cart lazily starts a fresh one, not a real error.
-        setCheckoutNotice('That cart was already checked out — starting a new one.')
+        setCheckoutNotice('That cart was already checked out, so a new one has been started.')
         try {
           await refetchCart()
         } catch (refetchErr) {
@@ -110,127 +114,129 @@ export function Shop() {
   if (!isAuthenticated) {
     return (
       <div>
-        <div className="page-header">
-          <div>
-            <h1>Shop</h1>
-            <p className="subtitle">Browse products and check out to create an order.</p>
-          </div>
-        </div>
-        <div className="auth-card" style={{ margin: '48px auto' }}>
-          <h2>Log in to shop</h2>
-          <p style={{ marginBottom: 20 }}>You'll need an account to add items to a cart and check out.</p>
-          <Link to="/login" className="btn primary" style={{ width: '100%' }}>
-            Log in
-          </Link>
-          <div className="switch">
-            No account? <Link to="/register">Sign up</Link>
-          </div>
-        </div>
+        <PageHeader title="Shop" />
+        <SignInGate title="Sign in to fill a cart" />
       </div>
     )
   }
 
-  const cartItemCount = cart?.items?.reduce((acc, i) => acc + i.quantity, 0) ?? 0
+  const cartLines = cart?.items ?? []
+  const cartUnits = cartLines.reduce((acc, i) => acc + i.quantity, 0)
+  const maxStock = Math.max(...products.map((p) => p.stock), 1)
+  const lowCount = products.filter((p) => p.stock > 0 && p.stock <= LOW_STOCK).length
+  const outCount = products.filter((p) => p.stock === 0).length
+
+  const finding = [
+    `${products.length} product${products.length === 1 ? '' : 's'}`,
+    lowCount ? `${lowCount} running low` : null,
+    outCount ? `${outCount} out of stock` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1>Shop</h1>
-          <p className="subtitle">
-            Add items to your cart, then check out — that's the only way to create an order now. Stock is real: an
-            item running out mid-checkout fails the order, it doesn't fake success.
-          </p>
-        </div>
-      </div>
+      <PageHeader title="Shop" subtitle={loading ? 'Loading…' : finding} />
 
       <ErrorBanner error={error} />
 
       {loading ? (
         <CenterLoading />
       ) : (
-        <div className="shop-layout">
-          <div className="product-grid">
-            {products.length === 0 ? (
-              <div className="empty-state">No products available.</div>
-            ) : (
-              products.map((product) => {
-                const qty = quantityInCart(cart, product.id)
-                const pending = pendingIds.has(product.id)
-                const outOfStock = product.stock === 0
-                return (
-                  <div className="card product-card" key={product.id}>
-                    <div className="card-title">{product.name}</div>
-                    {product.description && <p className="product-description">{product.description}</p>}
-                    <div className="product-meta">
-                      <span className="product-price">{formatPrice(product.price)}</span>
-                      <span className={`not-exposed${outOfStock ? ' out-of-stock' : ''}`}>
-                        {outOfStock ? 'out of stock' : `${product.stock} in stock`}
-                      </span>
-                    </div>
-                    <div className="qty-stepper">
-                      <button
-                        type="button"
-                        className="btn small"
-                        disabled={pending || qty <= 0}
-                        onClick={() => handleSetQuantity(product.id, qty - 1)}
-                      >
-                        −
-                      </button>
-                      <span className="qty-value mono">{pending ? '…' : qty}</span>
-                      <button
-                        type="button"
-                        className="btn small"
-                        disabled={pending || outOfStock || qty >= product.stock}
-                        onClick={() => handleSetQuantity(product.id, qty + 1)}
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+          {products.length === 0 ? (
+            <EmptyState>No products yet.</EmptyState>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="pl-0 text-xs font-normal text-muted-foreground">Product</TableHead>
+                  <TableHead className="text-right text-xs font-normal text-muted-foreground">In stock</TableHead>
+                  <TableHead className="pr-0 text-right text-xs font-normal text-muted-foreground">In cart</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {products.map((product) => {
+                  const qty = quantityInCart(cart, product.id)
+                  const pending = pendingIds.has(product.id)
+                  const outOfStock = product.stock === 0
+                  const low = product.stock <= LOW_STOCK
+                  return (
+                    <TableRow key={product.id} className="border-border/60">
+                      <TableCell className="py-2.5 pl-0">
+                        <div className="font-medium">{product.name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{product.sku}</div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="inline-flex flex-col items-end gap-1.5">
+                          <span className={cn('tabular', low && 'text-warning')}>{outOfStock ? 'Out' : product.stock}</span>
+                          <span className="h-[3px] w-24 rounded-full bg-accent" aria-hidden="true">
+                            <span
+                              className={cn('block h-full rounded-full', low ? 'bg-warning' : 'bg-chart-1')}
+                              style={{ width: `${(product.stock / maxStock) * 100}%` }}
+                            />
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="pr-0 text-right">
+                        <div className="inline-flex items-center rounded-lg border border-input" aria-label={`${product.name} in cart`}>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={pending || qty <= 0}
+                            onClick={() => handleSetQuantity(product.id, qty - 1)}
+                            aria-label={`Remove one ${product.name}`}
+                          >
+                            <Minus />
+                          </Button>
+                          <span className="min-w-7 text-center text-[13px] tabular">{pending ? '…' : qty}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={pending || outOfStock || qty >= product.stock}
+                            onClick={() => handleSetQuantity(product.id, qty + 1)}
+                            aria-label={`Add one ${product.name}`}
+                          >
+                            <Plus />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
 
-          <div className="card cart-panel">
-            <div className="card-title">
-              Cart
-              {cartItemCount > 0 && <span className="not-exposed">{cartItemCount} item{cartItemCount === 1 ? '' : 's'}</span>}
-            </div>
-            {checkoutNotice && <div className="banner info">{checkoutNotice}</div>}
-            {!cart?.items?.length ? (
-              <p className="not-exposed">Your cart is empty.</p>
+          <Panel title="Cart" meta={`${cartUnits} unit${cartUnits === 1 ? '' : 's'}`} className="xl:sticky xl:top-4 max-xl:order-first">
+            {checkoutNotice && <p className="mb-3 rounded-md bg-info-bg px-3 py-2 text-[13px] text-info">{checkoutNotice}</p>}
+            {cartLines.length === 0 ? (
+              <p className="mb-4 text-sm text-muted-foreground">Empty</p>
             ) : (
-              <ul className="cart-lines">
-                {cart.items.map((item) => (
-                  <li key={item.productId} className="cart-line">
-                    <span className="cart-line-name">
-                      {item.quantity}× {item.productName}
+              <ul className="mb-4 divide-y divide-border">
+                {cartLines.map((item) => (
+                  <li key={item.productId} className="flex min-h-10 items-center justify-between gap-3 text-[13px]">
+                    <span>
+                      <span className="mr-1.5 text-muted-foreground tabular">{item.quantity}×</span>
+                      {item.productName}
                     </span>
-                    <button
-                      type="button"
-                      className="btn small"
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
                       disabled={pendingIds.has(item.productId)}
                       onClick={() => handleSetQuantity(item.productId, 0)}
                       aria-label={`Remove ${item.productName} from cart`}
                     >
-                      ×
-                    </button>
+                      <X />
+                    </Button>
                   </li>
                 ))}
               </ul>
             )}
-            <button
-              type="button"
-              className="btn primary"
-              style={{ width: '100%', marginTop: 14 }}
-              disabled={checkingOut || !cart?.items?.length}
-              onClick={handleCheckout}
-            >
-              {checkingOut ? 'Checking out…' : 'Checkout'}
-            </button>
-          </div>
+            <Button size="lg" className="w-full" disabled={checkingOut || cartLines.length === 0} onClick={handleCheckout}>
+              {checkingOut ? 'Checking out…' : 'Check out'}
+            </Button>
+          </Panel>
         </div>
       )}
     </div>

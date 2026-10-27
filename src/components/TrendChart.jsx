@@ -1,57 +1,87 @@
-import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from 'recharts'
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { ChartTooltipBox } from './ChartTooltip.jsx'
+import { AXIS_TICK, BASELINE_STROKE, GRID_STROKE } from './chartTheme.js'
+import { EmptyState } from './Panel.jsx'
 
-function TrendTooltip({ active, payload, formatValue, label }) {
+function TrendTooltip({ active, payload, formatValue, labelKey }) {
   if (!active || !payload?.length) return null
+  const point = payload[0]?.payload ?? {}
   const value = payload[0]?.value
   return (
-    <div className="chart-tooltip">
-      <span>{label}</span>
-      <strong>{formatValue ? formatValue(value) : value}</strong>
-    </div>
+    <ChartTooltipBox>
+      {labelKey && point[labelKey] && <span>{point[labelKey]}</span>}
+      <strong className="font-medium text-foreground tabular">
+        {value === null || value === undefined ? '—' : formatValue ? formatValue(value) : value}
+      </strong>
+    </ChartTooltipBox>
   )
 }
 
 /**
- * Small live-updating area chart for a rolling window of client-observed
- * samples. There's no history API on the backend (only the current scrape),
- * so this is only ever as deep as the window this browser tab has been open.
+ * One series over time: a 2px straight line in the chart hue with a flat
+ * 12% tint under it (no gradient, no markers), faint horizontal gridlines,
+ * round ticks on the left with no axis line.
  */
-export function TrendChart({ data, dataKey, color = 'var(--accent)', formatValue, height = 64, emptyText = 'collecting…', connectNulls = true }) {
+export function TrendChart({
+  data,
+  dataKey,
+  color = 'var(--chart-1)',
+  formatValue,
+  formatTick,
+  height = 180,
+  emptyText = 'Collecting…',
+  connectNulls = true,
+  labelKey,
+}) {
   const hasData = data.some((d) => d[dataKey] !== null && d[dataKey] !== undefined)
   if (!hasData) {
     return (
-      <div className="trend-chart-empty" style={{ height }}>
+      <EmptyState className="grid place-items-center text-xs" style={{ height }}>
         {emptyText}
-      </div>
+      </EmptyState>
     )
   }
-
-  const gradientId = `grad-${dataKey}`
 
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity={0.35} />
-              <stop offset="100%" stopColor={color} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <YAxis hide domain={['dataMin', 'dataMax']} />
+        <AreaChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 0 }}>
+          <CartesianGrid stroke={GRID_STROKE} vertical={false} />
+          {labelKey && (
+            <XAxis
+              dataKey={labelKey}
+              tick={AXIS_TICK}
+              axisLine={{ stroke: BASELINE_STROKE }}
+              tickLine={false}
+              minTickGap={28}
+              interval="preserveStartEnd"
+            />
+          )}
+          <YAxis
+            domain={[0, 'auto']}
+            tick={AXIS_TICK}
+            tickFormatter={formatTick}
+            axisLine={false}
+            tickLine={false}
+            width={44}
+            tickCount={5}
+          />
           <Tooltip
-            content={<TrendTooltip formatValue={formatValue} />}
-            cursor={{ stroke: 'var(--border-strong)', strokeWidth: 1 }}
+            content={<TrendTooltip formatValue={formatValue} labelKey={labelKey} />}
+            cursor={{ stroke: BASELINE_STROKE, strokeWidth: 1 }}
             wrapperStyle={{ outline: 'none' }}
           />
           <Area
-            type="monotone"
+            type="linear"
             dataKey={dataKey}
             stroke={color}
-            strokeWidth={1.75}
-            fill={`url(#${gradientId})`}
+            strokeWidth={2}
+            fill={color}
+            fillOpacity={0.12}
             isAnimationActive={false}
             connectNulls={connectNulls}
+            dot={false}
+            activeDot={{ r: 4, strokeWidth: 0, fill: color }}
           />
         </AreaChart>
       </ResponsiveContainer>

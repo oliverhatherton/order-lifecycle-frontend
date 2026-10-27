@@ -16,15 +16,23 @@ import { buildCorrelationRows } from '../lib/metricsCorrelation.js'
 import { useMetricsPoller } from '../lib/useMetricsPoller.js'
 import { useMetricHistory } from '../lib/useMetricHistory.js'
 import { useAuth } from '../lib/useAuth.js'
-import { MetricCard } from '../components/MetricCard.jsx'
+import { KpiStrip } from '../components/KpiStrip.jsx'
 import { BarList } from '../components/BarList.jsx'
 import { TrendChart } from '../components/TrendChart.jsx'
 import { DonutChart } from '../components/DonutChart.jsx'
 import { CorrelationChart } from '../components/CorrelationChart.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
+import { EmptyState, PageHeader, Panel } from '../components/Panel.jsx'
+import { StatusBadge } from '../components/StatusBadge.jsx'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
+import { formatLatency, latencyParts, stageRange } from '@/lib/format'
 
 const REFRESH_MS = 5000
-const HISTORY_LENGTH = 40 // ~3.3 min of context at the default 5s poll interval
+const HISTORY_LENGTH = 36 // 3 minutes at the 5s poll
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -32,47 +40,43 @@ const TABS = [
   { key: 'orders', label: 'Orders' },
   { key: 'messaging', label: 'Messaging' },
   { key: 'runtime', label: 'Runtime' },
-  { key: 'correlation', label: 'Spike Correlation' },
+  { key: 'correlation', label: 'Correlation' },
 ]
 
 const CORRELATION_RESOLUTIONS = [
-  { value: '1m', label: '1m buckets — ~8h span' },
-  { value: '5m', label: '5m buckets — ~41h span' },
-  { value: '15m', label: '15m buckets — ~5d span' },
-  { value: '1h', label: '1h buckets — ~3wk span' },
+  { value: '1m', label: '1 min · 8 h' },
+  { value: '5m', label: '5 min · 41 h' },
+  { value: '15m', label: '15 min · 5 days' },
+  { value: '1h', label: '1 h · 3 weeks' },
 ]
 
 const IN_FLIGHT_STATUSES = ['PENDING', 'RESERVED', 'PAID']
 const STAGES = [
-  { key: 'reservation', label: 'Reservation (created → RESERVED)' },
-  { key: 'payment', label: 'Payment (Pay → PAID)' },
-  { key: 'completion', label: 'Completion (PAID → COMPLETED)' },
-  { key: 'fulfilment', label: 'Fulfilment (Pay → COMPLETED)' },
+  { key: 'reservation', label: 'Reservation', detail: 'created → reserved' },
+  { key: 'payment', label: 'Payment', detail: 'Pay → paid' },
+  { key: 'completion', label: 'Completion', detail: 'paid → completed' },
+  { key: 'fulfilment', label: 'Fulfilment', detail: 'Pay → completed' },
 ]
 const DLQ = 'order_lifecycle.dlq'
+const QUEUE_HOPS = [
+  { queue: 'inventory.order_created', label: 'to inventory' },
+  { queue: 'payment.inventory_reserved', label: 'to payment' },
+  { queue: 'completion.payment_processed', label: 'to completion' },
+  { queue: 'email.notifications', label: 'to email' },
+]
 
 function formatPercent(n, digits = 1) {
-  return n === null || n === undefined || !Number.isFinite(n) ? null : `${n.toFixed(digits)}%`
+  return n === null || n === undefined || !Number.isFinite(n) ? null : n.toFixed(digits)
 }
 
-function formatRate(n, unit) {
+function formatRate(n) {
   if (n === null || n === undefined) return null
-  return `${n < 10 ? n.toFixed(2) : n.toFixed(1)} ${unit}`
-}
-
-function formatMs(seconds) {
-  if (seconds === null || seconds === undefined) return null
-  return `${(seconds * 1000).toFixed(seconds < 0.01 ? 2 : 1)} ms`
-}
-
-function formatSeconds(seconds) {
-  if (seconds === null || seconds === undefined) return null
-  return seconds < 1 ? `${(seconds * 1000).toFixed(0)} ms` : `${seconds.toFixed(2)} s`
+  return n < 10 ? n.toFixed(2) : n.toFixed(1)
 }
 
 /** Distinguishes "backend never declared this metric" from "declared but no samples emitted yet". */
 function emptyTextFor(families, name) {
-  return families.has(name) ? 'no data yet' : 'not exposed by backend'
+  return families.has(name) ? 'No data yet' : 'Not exported by this backend'
 }
 
 /** Ratio as a percentage, or null when the denominator is 0 (no traffic ≠ 0% / 100%). */
@@ -82,42 +86,90 @@ function percentOf(part, whole) {
 
 function DurableHistoryLoginPrompt() {
   return (
-    <div className="banner info">
-      <Link to="/login" className="nav-link" style={{ padding: 0 }}>
+    <EmptyState>
+      <Link to="/login" className="text-foreground hover:underline">
         Log in
       </Link>{' '}
-      to view durable history — <code>/metrics/history</code> requires authentication.
-    </div>
+      to see history
+    </EmptyState>
   )
 }
 
-/** Small key/value table — per-consumer and per-queue breakdowns. */
+/** Small key/value table — per-consumer, per-endpoint and per-queue breakdowns. */
 function StatTable({ columns, rows, emptyText }) {
-  if (rows.length === 0) return <p className="not-exposed">{emptyText}</p>
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground">{emptyText}</p>
   return (
-    <table className="stat-table">
-      <thead>
-        <tr>
-          {columns.map((c) => (
-            <th key={c.key} className={c.numeric ? 'num' : undefined}>
+    <Table className="text-[13px]">
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          {columns.map((c, i) => (
+            <TableHead
+              key={c.key}
+              className={cn('h-8 text-xs font-normal text-muted-foreground', c.numeric && 'text-right', i === 0 && 'pl-0', i === columns.length - 1 && 'pr-0')}
+            >
               {c.label}
-            </th>
+            </TableHead>
           ))}
-        </tr>
-      </thead>
-      <tbody>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {rows.map((row) => (
-          <tr key={row.id}>
-            {columns.map((c) => (
-              <td key={c.key} className={`${c.numeric ? 'num' : ''} ${row.tones?.[c.key] ?? ''}`.trim() || undefined}>
+          <TableRow key={row.id} className="border-border/60">
+            {columns.map((c, i) => (
+              <TableCell
+                key={c.key}
+                className={cn(
+                  'h-9 max-w-72 truncate py-1 tabular',
+                  c.numeric && 'text-right',
+                  c.mono && 'font-mono text-xs',
+                  i === 0 && 'pl-0',
+                  i === columns.length - 1 && 'pr-0',
+                  row.tones?.[c.key] === 'warning' && 'font-semibold text-warning',
+                  row.tones?.[c.key] === 'danger' && 'font-semibold text-negative',
+                )}
+              >
                 {row[c.key] ?? '—'}
-              </td>
+              </TableCell>
             ))}
-          </tr>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   )
+}
+
+/** One series at a time over the last few minutes, switched by a segmented control. */
+function LiveChart({ title, series, history }) {
+  const [selected, setSelected] = useState(series[0].key)
+  const active = series.find((s) => s.key === selected) ?? series[0]
+  return (
+    <Panel
+      title={title}
+      action={
+        <ToggleGroup type="single" variant="outline" size="sm" value={active.key} onValueChange={(v) => v && setSelected(v)} aria-label="Series">
+          {series.map((s) => (
+            <ToggleGroupItem key={s.key} value={s.key} className="px-2.5 text-xs">
+              {s.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      }
+    >
+      <TrendChart
+        data={history}
+        dataKey={active.key}
+        labelKey="label"
+        formatValue={active.format}
+        formatTick={active.tick}
+        height={200}
+        emptyText="Collecting…"
+      />
+    </Panel>
+  )
+}
+
+function Pill({ ok, children }) {
+  return <StatusBadge tone={ok ? 'positive' : 'negative'}>{children}</StatusBadge>
 }
 
 export function Metrics() {
@@ -156,7 +208,7 @@ export function Metrics() {
     [corrTraffic.points, corrLagAvg.points, corrLagMax.points, corrCpu.points, corrHeap.points],
   )
 
-  const windowLabel = windowSeconds ? `last ${Math.round(windowSeconds)}s` : 'collecting…'
+  const windowLabel = windowSeconds ? `last ${Math.round(windowSeconds)} s` : 'collecting…'
 
   // ---------- HTTP (windowed) ----------
   const HTTP = 'http_request_duration_seconds'
@@ -172,9 +224,7 @@ export function Metrics() {
   const clientErrorRate = windowRequests !== null ? percentOf(window4xx, windowRequests) : null
 
   const windowLatency = hasTwoSamples ? histogramDelta(httpFamily, httpPrev) : null
-  const latencyP50 = histogramQuantile(windowLatency, 0.5)
   const latencyP95 = histogramQuantile(windowLatency, 0.95)
-  const latencyP99 = histogramQuantile(windowLatency, 0.99)
 
   const routeCombos = distinctLabelSets(httpFamily, ['method', 'route'], { suffix: 'count' })
   const routeRows = routeCombos
@@ -202,27 +252,30 @@ export function Metrics() {
   const ordersByStatus = sumByLabel(families.get('orders_in_status'), 'status')
   const hasOrderGauge = Object.keys(ordersByStatus).length > 0
   const inFlight = hasOrderGauge ? IN_FLIGHT_STATUSES.reduce((n, s) => n + (ordersByStatus[s] ?? 0), 0) : null
-  const ordersCreatedPerMin = hasTwoSamples ? rate('orders_created_total') : null
+  const ordersCreatedPerSec = hasTwoSamples ? rate('orders_created_total') : null
   const ordersCreatedTotal = families.has('orders_created_total') ? sumSamples(families.get('orders_created_total')) : null
-  const terminalRows = ['COMPLETED', 'FAILED', 'CANCELLED']
-    .map((s) => ({ key: s.charAt(0) + s.slice(1).toLowerCase(), value: ordersByStatus[s] ?? 0 }))
+  const terminalRows = [
+    { status: 'COMPLETED', key: 'Completed', color: 'var(--positive)' },
+    { status: 'FAILED', key: 'Failed', color: 'var(--negative)' },
+    { status: 'CANCELLED', key: 'Cancelled', color: 'var(--control)' },
+  ]
+    .map((r) => ({ ...r, value: ordersByStatus[r.status] ?? 0 }))
     .filter((r) => r.value > 0)
   const finished = (ordersByStatus.COMPLETED ?? 0) + (ordersByStatus.FAILED ?? 0)
   const successRate = hasOrderGauge ? percentOf(ordersByStatus.COMPLETED ?? 0, finished) : null
 
   const stageFamily = families.get('order_stage_duration_seconds')
+  const stageSeries = Object.fromEntries(STAGES.map((s) => [s.key, histogramSeries(stageFamily, { where: (l) => l.stage === s.key })]))
+  const usually = (key) => stageRange(stageSeries[key])
   const stageRows = STAGES.map((stage) => {
-    const series = histogramSeries(stageFamily, { where: (l) => l.stage === stage.key })
+    const series = stageSeries[stage.key]
     return {
       id: stage.key,
-      stage: stage.label,
+      stage: `${stage.label} (${stage.detail})`,
       count: series?.count ?? 0,
-      p50: formatSeconds(histogramQuantile(series, 0.5)),
-      p95: formatSeconds(histogramQuantile(series, 0.95)),
-      avg: series?.count ? formatSeconds(series.avg) : null,
+      usually: stageRange(series),
     }
   })
-  const fulfilmentP95 = histogramQuantile(histogramSeries(stageFamily, { where: (l) => l.stage === 'fulfilment' }), 0.95)
   const failureReasonRows = groupByLabel(families.get('order_failures_total'), 'reason')
   const paymentOutcomeRows = groupByLabel(families.get('payment_authorizations_total'), 'outcome')
 
@@ -242,11 +295,11 @@ export function Metrics() {
     return {
       id: consumer,
       consumer,
-      processed: byOutcome.processed ?? 0,
-      skipped: byOutcome.skipped ?? 0,
-      retried: byOutcome.retried ?? 0,
-      failed: byOutcome.failed ?? 0,
-      p95: formatMs(p95),
+      processed: (byOutcome.processed ?? 0).toLocaleString(),
+      skipped: (byOutcome.skipped ?? 0).toLocaleString(),
+      retried: (byOutcome.retried ?? 0).toLocaleString(),
+      failed: (byOutcome.failed ?? 0).toLocaleString(),
+      p95: formatLatency(p95),
       tones: { failed: byOutcome.failed ? 'tone-danger' : '', retried: byOutcome.retried ? 'tone-warning' : '' },
     }
   })
@@ -271,8 +324,8 @@ export function Metrics() {
   })
   const hasQueueGauge = queueNames.length > 0
   const dlqDepth = hasQueueGauge ? (queueDepth[DLQ] ?? 0) : null
-  const backlog = hasQueueGauge ? queueNames.filter((q) => q !== DLQ).reduce((n, q) => n + queueDepth[q], 0) : null
-  const idleQueues = queueNames.filter((q) => q !== DLQ && (queueConsumers[q] ?? 0) === 0)
+  const workQueues = queueNames.filter((q) => q !== DLQ)
+  const idleQueues = workQueues.filter((q) => (queueConsumers[q] ?? 0) === 0)
 
   const outboxPending = scalarValue(families.get('outbox_pending_messages'))
   const outboxAge = scalarValue(families.get('outbox_oldest_pending_age_seconds'))
@@ -288,29 +341,26 @@ export function Metrics() {
   const cacheByClass = Object.keys(sumByLabel(families.get(CACHE), 'key_class')).map((keyClass) => {
     const where = (l) => l.key_class === keyClass
     return {
-      key: keyClass,
-      value: percentOf(
-        sumSamples(families.get(CACHE), { where: (l) => where(l) && isHit(l) }),
-        sumSamples(families.get(CACHE), { where }),
-      ) ?? 0,
+      key: keyClass === 'order' ? 'One order (order:{id})' : keyClass === 'orders' ? "A user's list (orders:user:{id})" : keyClass,
+      value:
+        percentOf(
+          sumSamples(families.get(CACHE), { where: (l) => where(l) && isHit(l) }),
+          sumSamples(families.get(CACHE), { where }),
+        ) ?? 0,
     }
   })
 
   // ---------- Runtime ----------
   const cpuRate = hasTwoSamples ? rate('process_cpu_seconds_total') : null
-  const cpuUserRate = hasTwoSamples ? rate('process_cpu_user_seconds_total') : null
-  const cpuSystemRate = hasTwoSamples ? rate('process_cpu_system_seconds_total') : null
   const rss = scalarValue(families.get('process_resident_memory_bytes'))
   const heapUsed = scalarValue(families.get('nodejs_heap_size_used_bytes'))
   const heapTotal = scalarValue(families.get('nodejs_heap_size_total_bytes'))
-  const lagP50 = scalarValue(families.get('nodejs_eventloop_lag_p50_seconds'))
-  const lagP90 = scalarValue(families.get('nodejs_eventloop_lag_p90_seconds'))
   const lagP99 = scalarValue(families.get('nodejs_eventloop_lag_p99_seconds'))
   const startTime = scalarValue(families.get('process_start_time_seconds'))
   const uptimeSeconds = startTime && lastUpdated ? lastUpdated / 1000 - startTime : null
 
-  // Append one point per poll tick to the rolling client-side history used by
-  // the sparkline charts (the scrape itself only has the current values).
+  // Append one point per poll tick to the rolling client-side history the
+  // live charts draw (the scrape itself only has the current values).
   useEffect(() => {
     if (!lastUpdated) return
     // Accumulating polled snapshots into a rolling buffer has no non-effect equivalent here.
@@ -319,16 +369,14 @@ export function Metrics() {
       if (prev.length && prev[prev.length - 1].t === lastUpdated) return prev
       const point = {
         t: lastUpdated,
+        label: new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         cpu: cpuRate !== null ? cpuRate * 100 : null,
-        rss,
-        heapUsed,
-        lag: lagP99 !== null ? lagP99 * 1000 : null,
+        heapMb: heapUsed !== null ? heapUsed / 1048576 : null,
+        lag: lagP99,
         rps: requestsPerSec,
-        p95Ms: latencyP95 !== null ? latencyP95 * 1000 : null,
+        p95S: latencyP95,
         msgRate: messagesPerSec,
         inFlight,
-        backlog: outboxPending !== null || backlog !== null ? (outboxPending ?? 0) + (backlog ?? 0) : null,
-        hitRate: cacheHitRate,
       }
       const next = [...prev, point]
       return next.length > HISTORY_LENGTH ? next.slice(next.length - HISTORY_LENGTH) : next
@@ -341,515 +389,469 @@ export function Metrics() {
   if (error && families.size === 0) {
     return (
       <div>
-        <div className="page-header">
-          <h1>Metrics</h1>
-        </div>
-        <div className="banner error">Could not reach the backend's /metrics endpoint: {error}</div>
+        <PageHeader title="Metrics" />
+        <p className="rounded-lg bg-negative-bg px-3.5 py-2.5 text-[13px] text-negative">Couldn't reach /metrics: {error}</p>
       </div>
     )
   }
 
-  const pipelineAlerts = [
-    dlqDepth > 0 && `${dlqDepth} message${dlqDepth === 1 ? '' : 's'} in the dead-letter queue`,
+  const alerts = [
+    dlqDepth > 0 && `${dlqDepth} in the dead-letter queue`,
     idleQueues.length > 0 && `no consumer on ${idleQueues.join(', ')}`,
-    outboxAge > 10 && `oldest unpublished outbox event is ${formatSeconds(outboxAge)} old`,
-    serverErrorRate > 1 && `${formatPercent(serverErrorRate)} of requests are failing with 5xx`,
+    outboxAge > 10 && `outbox ${formatLatency(outboxAge)} behind`,
+    serverErrorRate > 1 && `${formatPercent(serverErrorRate)}% 5xx`,
   ].filter(Boolean)
+
+  const finding = !hasTwoSamples ? 'Collecting…' : alerts.length ? `Needs attention: ${alerts.join(' · ')}` : 'Healthy'
+
+  const trafficKpis = [
+    {
+      label: 'Requests',
+      value: formatRate(requestsPerSec),
+      unit: ' /s',
+      sub: windowLabel,
+      empty: hasTwoSamples ? emptyTextFor(families, HTTP) : 'Collecting…',
+    },
+    {
+      label: 'Latency',
+      value: latencyParts(latencyP95).value,
+      unit: latencyParts(latencyP95).unit,
+      empty: hasTwoSamples ? 'No requests' : 'Collecting…',
+    },
+    {
+      label: 'Server errors',
+      value: formatPercent(serverErrorRate, 2),
+      unit: '%',
+      sub: windowRequests ? `${Math.round(window5xx)} of ${Math.round(windowRequests).toLocaleString()}` : undefined,
+      tone: serverErrorRate > 1 ? 'danger' : undefined,
+      empty: hasTwoSamples ? 'No requests' : 'Collecting…',
+    },
+    {
+      label: 'Cache hit rate',
+      value: formatPercent(cacheHitRate),
+      unit: '%',
+      sub: lifetimeCacheHitRate !== null ? `${formatPercent(lifetimeCacheHitRate)}% since start` : undefined,
+      empty: lifetimeCacheHitRate !== null ? 'No reads' : emptyTextFor(families, CACHE),
+    },
+  ]
+
+  const liveSeries = [
+    { key: 'rps', label: 'Requests', format: (v) => `${v.toFixed(2)} req/s`, tick: (v) => v.toFixed(0) },
+    { key: 'p95S', label: 'Latency', format: (v) => formatLatency(v), tick: (v) => formatLatency(v) },
+    { key: 'msgRate', label: 'Messages', format: (v) => `${v.toFixed(2)} msg/s`, tick: (v) => v.toFixed(1) },
+    { key: 'inFlight', label: 'In flight', format: (v) => `${v} orders`, tick: (v) => v.toFixed(0) },
+  ]
+
+  const stage = (name, count, note, tone) => (
+    <div
+      className={cn(
+        'min-w-0 rounded-lg px-3.5 pt-3.5 pb-3',
+        tone === 'gate' ? 'bg-warning-bg' : tone === 'done' ? 'bg-foreground text-background' : 'bg-secondary',
+      )}
+    >
+      <div className={cn('text-[13px] font-medium', tone === 'done' && 'text-background/70')}>{name}</div>
+      <div className="mt-1.5 text-[28px] leading-[34px] tabular">{count}</div>
+      <div className={cn('mt-0.5 text-xs', tone === 'gate' ? 'text-warning' : tone === 'done' ? 'text-background/70' : 'text-muted-foreground')}>
+        {note}
+      </div>
+    </div>
+  )
+
+  const twoCol = 'grid items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]'
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1>Metrics</h1>
-          <p className="subtitle">
-            Live view of <code>GET /metrics</code> — the backend's Prometheus scrape endpoint. Rates and latency
-            percentiles cover a rolling 30s window; totals are since the process started unless noted.
-          </p>
-        </div>
-        <div className="user-chip">
-          {!error && <span className="live-dot" />}
-          <span>{error ? `error: ${error}` : lastUpdated ? `updated ${new Date(lastUpdated).toLocaleTimeString()}` : '—'}</span>
-        </div>
-      </div>
+      <PageHeader
+        title="Metrics"
+        subtitle={<span className={alerts.length ? 'text-negative' : undefined}>{finding}</span>}
+        actions={
+          <span className="flex items-center gap-2 text-xs text-muted-foreground tabular">
+            <span className={cn('size-1.5 rounded-full', error ? 'bg-faint' : 'bg-positive')} />
+            {error ? 'Scrape failed' : lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}
+          </span>
+        }
+      />
 
-      {!hasTwoSamples && <div className="banner info">Collecting a second sample to compute rates and windowed latency…</div>}
-
-      <div className="metrics-tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={`metrics-tab${tab === t.key ? ' active' : ''}`}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={setTab} className="mb-6">
+        <TabsList variant="line" className="w-full justify-start gap-5 overflow-x-auto border-b border-border px-0 [scrollbar-width:none]">
+          {TABS.map((t) => (
+            <TabsTrigger key={t.key} value={t.key} className="flex-none px-0">
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       {tab === 'overview' && (
-        <>
-          {hasTwoSamples && (
-            <div className={`banner ${pipelineAlerts.length ? 'error' : 'success'}`} style={{ marginBottom: 14 }}>
-              {pipelineAlerts.length ? `Needs attention: ${pipelineAlerts.join(' · ')}` : 'Pipeline healthy — no dead letters, every queue has a consumer, outbox draining.'}
-            </div>
-          )}
-          <div className="section-heading">
-            <h2>Traffic</h2>
-            <span className="rule" />
+        <div className="flex flex-col gap-6">
+          <div className={twoCol}>
+            <Panel title="Pipeline">
+              {hasOrderGauge ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    {stage('Reserving', ordersByStatus.PENDING ?? 0, usually('reservation'))}
+                    {stage('Waiting for Pay', ordersByStatus.RESERVED ?? 0, 'held', 'gate')}
+                    {stage('Paid', ordersByStatus.PAID ?? 0, usually('completion'))}
+                    {stage('Completed', (ordersByStatus.COMPLETED ?? 0).toLocaleString(), `Pay → done ${usually('fulfilment')}`, 'done')}
+                  </div>
+                  <div className="mt-2.5 grid grid-cols-2 gap-2 md:grid-cols-4">
+                    {QUEUE_HOPS.map((hop) => {
+                      const depth = queueDepth[hop.queue]
+                      return (
+                        <div key={hop.queue} className="flex min-w-0 flex-col gap-0.5 px-0.5 pt-2 text-xs text-muted-foreground">
+                          <span className="truncate font-mono text-[11.5px] text-foreground" title={hop.queue}>
+                            {hop.queue}
+                          </span>
+                          <span className={cn('tabular', depth > 50 && 'font-semibold text-warning')}>
+                            {depth === undefined ? '—' : `${depth} ready · ${queueConsumers[hop.queue] ?? 0} consumer${queueConsumers[hop.queue] === 1 ? '' : 's'}`}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">{emptyTextFor(families, 'orders_in_status')}</p>
+              )}
+            </Panel>
+
+            <Panel title="Health">
+              <ul className="divide-y divide-border text-[13px]">
+                <li className="flex min-h-11 items-center justify-between gap-3">
+                  Dead-letter queue
+                  {dlqDepth === null ? <span className="text-faint">—</span> : <Pill ok={dlqDepth === 0}>{dlqDepth === 0 ? 'Empty' : dlqDepth}</Pill>}
+                </li>
+                <li className="flex min-h-11 items-center justify-between gap-3">
+                  Consumers
+                  {hasQueueGauge ? (
+                    <Pill ok={idleQueues.length === 0}>
+                      {workQueues.length - idleQueues.length} of {workQueues.length}
+                    </Pill>
+                  ) : (
+                    <span className="text-faint">—</span>
+                  )}
+                </li>
+                <li className="flex min-h-11 items-center justify-between gap-3">
+                  Outbox
+                  {outboxAge === null ? (
+                    <span className="text-faint">—</span>
+                  ) : (
+                    <Pill ok={outboxAge <= 10}>{outboxAge === 0 ? 'Drained' : formatLatency(outboxAge)}</Pill>
+                  )}
+                </li>
+                <li className="flex min-h-11 items-center justify-between gap-3">
+                  Failed orders
+                  <span className="tabular">{sumSamples(families.get('order_failures_total')).toLocaleString()}</span>
+                </li>
+              </ul>
+            </Panel>
           </div>
-          <div className="grid">
-            <MetricCard
-              label="Requests/sec"
-              value={formatRate(requestsPerSec, 'req/s')}
-              sub={windowLabel}
-              emptyText={hasTwoSamples ? emptyTextFor(families, HTTP) : 'collecting…'}
-              chart={<TrendChart data={history} dataKey="rps" color="var(--accent)" formatValue={(v) => `${v.toFixed(2)} req/s`} />}
-            />
-            <MetricCard
-              label="Latency p95"
-              value={latencyP95 !== null ? formatMs(latencyP95) : null}
-              sub={latencyP50 !== null ? `p50 ${formatMs(latencyP50)} · p99 ${formatMs(latencyP99)}` : undefined}
-              emptyText={hasTwoSamples ? 'no requests in window' : 'collecting…'}
-              chart={<TrendChart data={history} dataKey="p95Ms" color="var(--pending)" formatValue={(v) => `${v.toFixed(1)} ms`} />}
-            />
-            <MetricCard
-              label="Server errors (5xx)"
-              value={formatPercent(serverErrorRate, 2)}
-              sub={windowRequests ? `${Math.round(window5xx)} of ${Math.round(windowRequests)} · 4xx ${formatPercent(clientErrorRate)}` : undefined}
-              tone={serverErrorRate > 1 ? 'danger' : undefined}
-              emptyText={hasTwoSamples ? 'no requests in window' : 'collecting…'}
-            />
-            <MetricCard
-              label="Cache hit rate"
-              value={formatPercent(cacheHitRate)}
-              sub={lifetimeCacheHitRate !== null ? `${formatPercent(lifetimeCacheHitRate)} since start` : undefined}
-              emptyText={lifetimeCacheHitRate !== null ? `no reads in window · ${formatPercent(lifetimeCacheHitRate)} since start` : emptyTextFor(families, CACHE)}
-              chart={<TrendChart data={history} dataKey="hitRate" color="var(--success)" formatValue={(v) => `${v.toFixed(1)}%`} />}
-            />
+
+          <KpiStrip items={trafficKpis} />
+
+          <div className={twoCol}>
+            <LiveChart title="Last 3 minutes" series={liveSeries} history={history} />
+            <Panel title="Outcomes" meta={successRate === null ? null : `${formatPercent(successRate)}% completed`}>
+              <DonutChart rows={terminalRows} emptyText={hasOrderGauge ? 'No finished orders' : emptyTextFor(families, 'orders_in_status')} />
+            </Panel>
           </div>
-          <div className="section-heading">
-            <h2>Orders &amp; pipeline</h2>
-            <span className="rule" />
-          </div>
-          <div className="grid">
-            <MetricCard
-              label="Orders in flight"
-              value={inFlight}
-              sub={hasOrderGauge ? IN_FLIGHT_STATUSES.map((s) => `${s.toLowerCase()} ${ordersByStatus[s] ?? 0}`).join(' · ') : undefined}
-              emptyText={emptyTextFor(families, 'orders_in_status')}
-              chart={<TrendChart data={history} dataKey="inFlight" color="var(--warning)" formatValue={(v) => `${v} orders`} />}
-            />
-            <MetricCard
-              label="Orders/min"
-              value={ordersCreatedPerMin !== null ? (ordersCreatedPerMin * 60).toFixed(1) : null}
-              sub={ordersCreatedTotal !== null ? `${ordersCreatedTotal} created since start` : undefined}
-              emptyText={hasTwoSamples ? emptyTextFor(families, 'orders_created_total') : 'collecting…'}
-            />
-            <MetricCard
-              label="Pay → completed p95"
-              value={formatSeconds(fulfilmentP95)}
-              sub="async latency after the user pays"
-              emptyText={emptyTextFor(families, 'order_stage_duration_seconds')}
-            />
-            <MetricCard
-              label="Order success rate"
-              value={formatPercent(successRate)}
-              sub={hasOrderGauge ? `${ordersByStatus.COMPLETED ?? 0} completed · ${ordersByStatus.FAILED ?? 0} failed (all time)` : undefined}
-              tone={successRate !== null && successRate < 95 ? 'warning' : undefined}
-              emptyText={hasOrderGauge ? 'no finished orders yet' : emptyTextFor(families, 'orders_in_status')}
-            />
-            <MetricCard
-              label="Dead-letter queue"
-              value={dlqDepth}
-              sub={dlqDepth ? 'poison messages awaiting inspection' : 'empty'}
-              tone={dlqDepth > 0 ? 'danger' : undefined}
-              emptyText="broker not reachable"
-            />
-            <MetricCard
-              label="Unpublished events"
-              value={outboxPending !== null ? outboxPending + (backlog ?? 0) : null}
-              sub={outboxPending !== null ? `outbox ${outboxPending} · queued ${backlog ?? '—'} · oldest ${formatSeconds(outboxAge) ?? '—'}` : undefined}
-              tone={outboxAge > 10 ? 'warning' : undefined}
-              emptyText={emptyTextFor(families, 'outbox_pending_messages')}
-              chart={<TrendChart data={history} dataKey="backlog" color="var(--accent)" formatValue={(v) => `${v} events`} />}
-            />
-          </div>
-        </>
+        </div>
       )}
 
       {tab === 'api' && (
-        <>
-          <div className="grid">
-            <MetricCard
-              label="Requests/sec"
-              value={formatRate(requestsPerSec, 'req/s')}
-              sub={windowLabel}
-              emptyText={hasTwoSamples ? emptyTextFor(families, HTTP) : 'collecting…'}
-              chart={<TrendChart data={history} dataKey="rps" color="var(--accent)" formatValue={(v) => `${v.toFixed(2)} req/s`} />}
-            />
-            <MetricCard
-              label="Latency"
-              value={latencyP95 !== null ? `${formatMs(latencyP95)} p95` : null}
-              sub={latencyP50 !== null ? `p50 ${formatMs(latencyP50)} · p99 ${formatMs(latencyP99)} · ${windowLabel}` : undefined}
-              emptyText={hasTwoSamples ? 'no requests in window' : 'collecting…'}
-              chart={<TrendChart data={history} dataKey="p95Ms" color="var(--pending)" formatValue={(v) => `${v.toFixed(1)} ms`} />}
-            />
-            <MetricCard
-              label="Server errors (5xx)"
-              value={formatPercent(serverErrorRate, 2)}
-              sub={windowRequests ? `${Math.round(window5xx)} of ${Math.round(windowRequests)} in ${windowLabel.replace('last ', '')}` : undefined}
-              tone={serverErrorRate > 1 ? 'danger' : undefined}
-              emptyText={hasTwoSamples ? 'no requests in window' : 'collecting…'}
-            />
-            <MetricCard
-              label="Client errors (4xx)"
-              value={formatPercent(clientErrorRate)}
-              sub="expected: auth failures, 404s, 409 conflicts"
-              emptyText={hasTwoSamples ? 'no requests in window' : 'collecting…'}
-            />
-          </div>
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="card-title">
-              Endpoints by p95 latency
-              <span className="not-exposed">p95 over {windowLabel.replace('last ', 'the last ')}; * = no traffic in window, since-start value</span>
-            </div>
+        <div className="flex flex-col gap-6">
+          <KpiStrip
+            items={[
+              trafficKpis[0],
+              trafficKpis[1],
+              trafficKpis[2],
+              {
+                label: 'Client errors',
+                value: formatPercent(clientErrorRate),
+                unit: '%',
+                empty: hasTwoSamples ? 'No requests' : 'Collecting…',
+              },
+            ]}
+          />
+          <Panel title="Endpoints" meta="* idle, since-start p95">
             <StatTable
               columns={[
                 { key: 'route', label: 'Endpoint' },
-                { key: 'rpsText', label: 'req/s', numeric: true },
-                { key: 'p95Text', label: 'p95', numeric: true },
-                { key: 'total', label: 'Total', numeric: true },
+                { key: 'rpsText', label: 'Req/s', numeric: true },
+                { key: 'p95Text', label: 'Latency', numeric: true },
+                { key: 'totalText', label: 'Total', numeric: true },
                 { key: 'errors5xx', label: '5xx', numeric: true },
               ]}
               rows={routeRows.map((r) => ({
                 ...r,
                 rpsText: r.rps ? r.rps.toFixed(2) : '0',
-                p95Text: r.p95 !== null ? `${formatMs(r.p95)}${r.windowed ? '' : '*'}` : '—',
-                tones: { errors5xx: r.errors5xx ? 'tone-danger' : '' },
+                p95Text: r.p95 !== null ? `${formatLatency(r.p95)}${r.windowed ? '' : '*'}` : '—',
+                totalText: r.total.toLocaleString(),
+                tones: { errors5xx: r.errors5xx ? 'danger' : '' },
               }))}
               emptyText={emptyTextFor(families, HTTP)}
             />
-          </div>
-          <div className="grid cols-2" style={{ marginTop: 14 }}>
-            <div className="card">
-              <div className="card-title">
-                Status codes <span className="not-exposed">since start</span>
-              </div>
-              <BarList rows={statusCodeRows} emptyText={emptyTextFor(families, HTTP)} />
-            </div>
-            <div className="card">
-              <div className="card-title">
-                Latency, hourly avg
-                <span className="not-exposed">durable, survives restarts</span>
-              </div>
+          </Panel>
+          <div className={twoCol}>
+            <Panel title="Latency, hourly">
               {isAuthenticated ? (
                 <TrendChart
-                  data={latencyHistory.points.map((p) => ({ value: p.avg }))}
+                  data={latencyHistory.points.map((p) => ({
+                    value: p.avg / 1000,
+                    label: new Date(p.bucketStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                  }))}
                   dataKey="value"
-                  color="var(--pending)"
-                  formatValue={(v) => `${v.toFixed(1)} ms`}
-                  height={120}
-                  emptyText={latencyHistory.loading ? 'loading…' : latencyHistory.error ? 'failed to load' : 'no requests recorded yet'}
+                  labelKey="label"
+                  formatValue={(v) => formatLatency(v)}
+                  formatTick={(v) => formatLatency(v)}
+                  height={180}
+                  emptyText={latencyHistory.loading ? 'Loading…' : latencyHistory.error ? "Couldn't load" : 'No requests yet'}
                 />
               ) : (
                 <DurableHistoryLoginPrompt />
               )}
-            </div>
+            </Panel>
+            <Panel title="Status codes">
+              <BarList rows={statusCodeRows} emptyText={emptyTextFor(families, HTTP)} />
+            </Panel>
           </div>
-        </>
+        </div>
       )}
 
       {tab === 'orders' && (
-        <>
-          <div className="grid">
-            <MetricCard
-              label="Created"
-              value={ordersCreatedTotal}
-              sub={ordersCreatedPerMin !== null ? `${(ordersCreatedPerMin * 60).toFixed(1)}/min over ${windowLabel.replace('last ', '')}` : 'since start'}
-              emptyText={emptyTextFor(families, 'orders_created_total')}
-            />
-            <MetricCard
-              label="In flight"
-              value={inFlight}
-              sub="pending + reserved + paid, right now"
-              emptyText={emptyTextFor(families, 'orders_in_status')}
-              chart={<TrendChart data={history} dataKey="inFlight" color="var(--warning)" formatValue={(v) => `${v} orders`} />}
-            />
-            <MetricCard
-              label="Success rate"
-              value={formatPercent(successRate)}
-              sub="completed ÷ (completed + failed), all time"
-              emptyText={hasOrderGauge ? 'no finished orders yet' : emptyTextFor(families, 'orders_in_status')}
-            />
-            <MetricCard
-              label="Pay → completed p95"
-              value={formatSeconds(fulfilmentP95)}
-              sub="since start"
-              emptyText={emptyTextFor(families, 'order_stage_duration_seconds')}
-            />
-          </div>
-          <div className="grid cols-2" style={{ marginTop: 14 }}>
-            <div className="card">
-              <div className="card-title">
-                Orders by status <span className="not-exposed">live, from the database</span>
-              </div>
-              <BarList
-                rows={Object.entries(ordersByStatus).map(([key, value]) => ({ key, value }))}
-                emptyText={emptyTextFor(families, 'orders_in_status')}
-              />
-            </div>
-            <div className="card">
-              <div className="card-title">
-                Outcomes <span className="not-exposed">all time</span>
-              </div>
-              <DonutChart rows={terminalRows} emptyText={hasOrderGauge ? 'no finished orders yet' : emptyTextFor(families, 'orders_in_status')} />
-            </div>
-          </div>
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="card-title">
-              Where the time goes <span className="not-exposed">per pipeline stage, since start</span>
-            </div>
+        <div className="flex flex-col gap-6">
+          <KpiStrip
+            items={[
+              {
+                label: 'Created',
+                value: ordersCreatedTotal === null ? null : ordersCreatedTotal.toLocaleString(),
+                sub: ordersCreatedPerSec !== null ? `${(ordersCreatedPerSec * 60).toFixed(1)} /min` : undefined,
+                empty: emptyTextFor(families, 'orders_created_total'),
+              },
+              {
+                label: 'In flight',
+                value: inFlight,
+                empty: emptyTextFor(families, 'orders_in_status'),
+              },
+              {
+                label: 'Completed',
+                value: formatPercent(successRate),
+                unit: '%',
+                sub: hasOrderGauge ? `${(ordersByStatus.COMPLETED ?? 0).toLocaleString()} of ${finished.toLocaleString()}` : undefined,
+                tone: successRate !== null && successRate < 95 ? 'warning' : undefined,
+                empty: hasOrderGauge ? 'None yet' : emptyTextFor(families, 'orders_in_status'),
+              },
+              {
+                label: 'Pay → completed',
+                value: stageSeries.fulfilment?.count ? usually('fulfilment') : null,
+                empty: emptyTextFor(families, 'order_stage_duration_seconds'),
+              },
+            ]}
+          />
+          <Panel title="Stages">
             <StatTable
               columns={[
                 { key: 'stage', label: 'Stage' },
                 { key: 'count', label: 'Orders', numeric: true },
-                { key: 'p50', label: 'p50', numeric: true },
-                { key: 'p95', label: 'p95', numeric: true },
-                { key: 'avg', label: 'avg', numeric: true },
+                { key: 'usually', label: 'Usually', numeric: true },
               ]}
               rows={stageRows}
               emptyText={emptyTextFor(families, 'order_stage_duration_seconds')}
             />
-            <p className="not-exposed" style={{ marginTop: 10 }}>
-              Reservation includes the outbox relay's 1s poll. The time between RESERVED and the user clicking Pay is
-              their think-time, so it's deliberately not counted.
-            </p>
+          </Panel>
+          <div className="grid items-start gap-6 md:grid-cols-2">
+            <Panel title="By status">
+              <BarList
+                rows={Object.entries(ordersByStatus)
+                  .map(([key, value]) => ({ key: key.charAt(0) + key.slice(1).toLowerCase(), value }))
+                  .sort((a, b) => b.value - a.value)}
+                emptyText={emptyTextFor(families, 'orders_in_status')}
+              />
+            </Panel>
+            <div className="flex flex-col gap-6">
+              <Panel title="Failure reasons">
+                <BarList
+                  rows={failureReasonRows.map((r) => ({ ...r, key: r.key.replace(/_/g, ' ') }))}
+                  emptyText={families.has('order_failures_total') ? 'None' : 'Not exported'}
+                />
+              </Panel>
+              <Panel title="Payments">
+                <BarList rows={paymentOutcomeRows} emptyText={emptyTextFor(families, 'payment_authorizations_total')} />
+              </Panel>
+            </div>
           </div>
-          <div className="grid cols-2" style={{ marginTop: 14 }}>
-            <div className="card">
-              <div className="card-title">
-                Failure reasons <span className="not-exposed">since start</span>
-              </div>
-              <BarList rows={failureReasonRows} emptyText={families.has('order_failures_total') ? 'no failures' : 'not exposed by backend'} />
-            </div>
-            <div className="card">
-              <div className="card-title">
-                Payment authorizations <span className="not-exposed">since start</span>
-              </div>
-              <BarList rows={paymentOutcomeRows} emptyText={emptyTextFor(families, 'payment_authorizations_total')} />
-              <p className="not-exposed" style={{ marginTop: 10 }}>
-                <strong>deduplicated</strong> = a redelivery reused the stored decision instead of charging again;{' '}
-                <strong>in_flight</strong> = backed off while another delivery held the charge.
-              </p>
-            </div>
-          </div>
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="card-title">
-              Daily — created vs finished
-              <span className="not-exposed">durable, survives restarts</span>
-            </div>
+          <Panel title="Daily">
             {isAuthenticated ? (
-              <div className="grid cols-2">
-                <TrendChart
-                  data={createdHistory.points.map((p) => ({ value: p.sum }))}
-                  dataKey="value"
-                  color="var(--accent)"
-                  formatValue={(v) => `${v} created`}
-                  height={120}
-                  emptyText={createdHistory.loading ? 'loading…' : createdHistory.error ? 'failed to load' : 'no orders recorded yet'}
-                />
-                <TrendChart
-                  data={ordersHistory.points.map((p) => ({ value: p.sum }))}
-                  dataKey="value"
-                  color="var(--success)"
-                  formatValue={(v) => `${v} finished`}
-                  height={120}
-                  emptyText={ordersHistory.loading ? 'loading…' : ordersHistory.error ? 'failed to load' : 'no orders recorded yet'}
-                />
+              <div className="grid gap-6 md:grid-cols-2">
+                <div>
+                  <div className="mb-2 text-xs font-medium">Created</div>
+                  <TrendChart
+                    data={createdHistory.points.map((p) => ({ value: p.sum, label: new Date(p.bucketStart).toLocaleDateString([], { day: 'numeric', month: 'short' }) }))}
+                    dataKey="value"
+                    labelKey="label"
+                    formatValue={(v) => `${v} created`}
+                    height={160}
+                    emptyText={createdHistory.loading ? 'Loading…' : createdHistory.error ? "Couldn't load" : 'None yet'}
+                  />
+                </div>
+                <div>
+                  <div className="mb-2 text-xs font-medium">Finished</div>
+                  <TrendChart
+                    data={ordersHistory.points.map((p) => ({ value: p.sum, label: new Date(p.bucketStart).toLocaleDateString([], { day: 'numeric', month: 'short' }) }))}
+                    dataKey="value"
+                    labelKey="label"
+                    color="var(--foreground)"
+                    formatValue={(v) => `${v} finished`}
+                    height={160}
+                    emptyText={ordersHistory.loading ? 'Loading…' : ordersHistory.error ? "Couldn't load" : 'None yet'}
+                  />
+                </div>
               </div>
             ) : (
               <DurableHistoryLoginPrompt />
             )}
-          </div>
-        </>
+          </Panel>
+        </div>
       )}
 
       {tab === 'messaging' && (
-        <>
-          <div className="grid">
-            <MetricCard
-              label="Messages/sec"
-              value={formatRate(messagesPerSec, 'msg/s')}
-              sub={windowLabel}
-              emptyText={hasTwoSamples ? emptyTextFor(families, CONSUMER) : 'collecting…'}
-              chart={<TrendChart data={history} dataKey="msgRate" color="var(--accent)" formatValue={(v) => `${v.toFixed(2)} msg/s`} />}
-            />
-            <MetricCard
-              label="Handled successfully"
-              value={formatPercent(messageSuccessRate)}
-              sub={attempted ? `${handled} of ${attempted} · ${outcomeTotals.skipped ?? 0} duplicates skipped` : undefined}
-              tone={messageSuccessRate !== null && messageSuccessRate < 99 ? 'warning' : undefined}
-              emptyText={emptyTextFor(families, CONSUMER)}
-            />
-            <MetricCard
-              label="Retries"
-              value={outcomeTotals.retried ?? (consumerFamily ? 0 : null)}
-              sub="backoff 1s → 2s → 4s before dead-lettering"
-              tone={outcomeTotals.retried ? 'warning' : undefined}
-              emptyText={emptyTextFor(families, CONSUMER)}
-            />
-            <MetricCard
-              label="Dead-lettered"
-              value={outcomeTotals.failed ?? (consumerFamily ? 0 : null)}
-              sub={dlqDepth !== null ? `${dlqDepth} currently in the DLQ` : undefined}
-              tone={outcomeTotals.failed ? 'danger' : undefined}
-              emptyText={emptyTextFor(families, CONSUMER)}
-            />
-            <MetricCard
-              label="Outbox backlog"
-              value={outboxPending}
-              sub={outboxRelayedPerSec !== null ? `oldest ${formatSeconds(outboxAge)} · relaying ${outboxRelayedPerSec.toFixed(2)}/s` : undefined}
-              tone={outboxAge > 10 ? 'warning' : undefined}
-              emptyText={emptyTextFor(families, 'outbox_pending_messages')}
-              chart={<TrendChart data={history} dataKey="backlog" color="var(--accent)" formatValue={(v) => `${v} events`} />}
-            />
-          </div>
-          <div className="grid cols-2" style={{ marginTop: 14 }}>
-            <div className="card">
-              <div className="card-title">
-                Consumers <span className="not-exposed">since start</span>
-              </div>
+        <div className="flex flex-col gap-6">
+          <KpiStrip
+            items={[
+              {
+                label: 'Messages',
+                value: formatRate(messagesPerSec),
+                unit: ' /s',
+                sub: windowLabel,
+                empty: hasTwoSamples ? emptyTextFor(families, CONSUMER) : 'Collecting…',
+              },
+              {
+                label: 'Handled',
+                value: formatPercent(messageSuccessRate),
+                unit: '%',
+                sub: attempted ? `${outcomeTotals.skipped ?? 0} dupes skipped` : undefined,
+                tone: messageSuccessRate !== null && messageSuccessRate < 99 ? 'warning' : undefined,
+                empty: emptyTextFor(families, CONSUMER),
+              },
+              {
+                label: 'Retries',
+                value: consumerFamily ? (outcomeTotals.retried ?? 0) : null,
+                tone: outcomeTotals.retried ? 'warning' : undefined,
+                empty: emptyTextFor(families, CONSUMER),
+              },
+              {
+                label: 'Dead-lettered',
+                value: consumerFamily ? (outcomeTotals.failed ?? 0) : null,
+                tone: outcomeTotals.failed ? 'danger' : undefined,
+                empty: emptyTextFor(families, CONSUMER),
+              },
+              {
+                label: 'Outbox',
+                value: outboxPending,
+                sub: outboxRelayedPerSec !== null ? `${outboxRelayedPerSec.toFixed(2)} /s relayed` : undefined,
+                tone: outboxAge > 10 ? 'warning' : undefined,
+                empty: emptyTextFor(families, 'outbox_pending_messages'),
+              },
+            ]}
+          />
+          <div className="grid items-start gap-6 md:grid-cols-2">
+            <Panel title="Consumers">
               <StatTable
                 columns={[
                   { key: 'consumer', label: 'Consumer' },
-                  { key: 'processed', label: 'Processed', numeric: true },
+                  { key: 'processed', label: 'Done', numeric: true },
                   { key: 'skipped', label: 'Dupes', numeric: true },
                   { key: 'retried', label: 'Retried', numeric: true },
                   { key: 'failed', label: 'DLQ', numeric: true },
-                  { key: 'p95', label: 'p95', numeric: true },
+                  { key: 'p95', label: 'Latency', numeric: true },
                 ]}
-                rows={consumerRows}
+                rows={consumerRows.map((r) => ({ ...r, tones: { failed: r.tones.failed ? 'danger' : '', retried: r.tones.retried ? 'warning' : '' } }))}
                 emptyText={emptyTextFor(families, CONSUMER)}
               />
-            </div>
-            <div className="card">
-              <div className="card-title">
-                Queues <span className="not-exposed">live, from the broker</span>
-              </div>
+            </Panel>
+            <Panel title="Queues">
               <StatTable
                 columns={[
-                  { key: 'queue', label: 'Queue' },
+                  { key: 'queue', label: 'Queue', mono: true },
                   { key: 'depth', label: 'Ready', numeric: true },
                   { key: 'consumers', label: 'Consumers', numeric: true },
                 ]}
-                rows={queueRows}
-                emptyText={families.has('rabbitmq_queue_messages') ? 'broker not reachable' : 'not exposed by backend'}
+                rows={queueRows.map((r) => ({
+                  ...r,
+                  tones: {
+                    depth: r.tones.depth === 'tone-danger' ? 'danger' : r.tones.depth === 'tone-warning' ? 'warning' : '',
+                    consumers: r.tones.consumers ? 'danger' : '',
+                  },
+                }))}
+                emptyText={families.has('rabbitmq_queue_messages') ? 'Broker unreachable' : 'Not exported'}
               />
-            </div>
+            </Panel>
           </div>
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="card-title">
-              Cache hit rate by key class <span className="not-exposed">since start</span>
-            </div>
+          <Panel title="Cache hit rate">
             <BarList rows={cacheByClass} formatValue={(v) => `${v.toFixed(1)}%`} emptyText={emptyTextFor(families, CACHE)} />
-            <p className="not-exposed" style={{ marginTop: 10 }}>
-              Only orders that have reached a terminal state are cached, so polling an in-flight order always misses
-              by design.
-            </p>
-          </div>
-        </>
+          </Panel>
+        </div>
       )}
 
       {tab === 'runtime' && (
-        <div className="grid">
-          <MetricCard
-            label="CPU"
-            value={formatPercent(cpuRate !== null ? cpuRate * 100 : null)}
-            sub={cpuUserRate !== null ? `user ${formatPercent(cpuUserRate * 100)} · sys ${formatPercent(cpuSystemRate * 100)}` : undefined}
-            emptyText={hasTwoSamples ? 'not exposed by backend' : 'collecting…'}
-            chart={<TrendChart data={history} dataKey="cpu" color="var(--accent)" formatValue={(v) => `${v.toFixed(1)}%`} />}
+        <div className="flex flex-col gap-6">
+          <KpiStrip
+            items={[
+              { label: 'CPU', value: cpuRate !== null ? (cpuRate * 100).toFixed(1) : null, unit: '%', empty: hasTwoSamples ? 'Not exported' : 'Collecting…' },
+              { label: 'Memory', value: rss !== null ? formatBytes(rss) : null },
+              {
+                label: 'Heap',
+                value: heapUsed !== null ? formatBytes(heapUsed) : null,
+                sub: heapUsed !== null && heapTotal !== null ? `of ${formatBytes(heapTotal)}` : undefined,
+              },
+              { label: 'Loop lag', value: latencyParts(lagP99).value, unit: latencyParts(lagP99).unit, tone: lagP99 > 0.1 ? 'warning' : undefined },
+              { label: 'Uptime', value: uptimeSeconds !== null ? formatDuration(uptimeSeconds) : null },
+            ]}
           />
-          <MetricCard
-            label="Memory (RSS)"
-            value={rss !== null ? formatBytes(rss) : null}
-            chart={<TrendChart data={history} dataKey="rss" color="var(--warning)" formatValue={formatBytes} />}
+          <LiveChart
+            title="Last 3 minutes"
+            history={history}
+            series={[
+              { key: 'cpu', label: 'CPU', format: (v) => `${v.toFixed(1)}%`, tick: (v) => `${v.toFixed(0)}%` },
+              { key: 'heapMb', label: 'Heap', format: (v) => `${v.toFixed(1)} MB`, tick: (v) => v.toFixed(0) },
+              { key: 'lag', label: 'Loop lag', format: (v) => formatLatency(v), tick: (v) => formatLatency(v) },
+            ]}
           />
-          <MetricCard
-            label="Heap"
-            value={heapUsed !== null && heapTotal !== null ? formatBytes(heapUsed) : null}
-            sub={heapUsed !== null && heapTotal !== null ? `of ${formatBytes(heapTotal)} (${((heapUsed / heapTotal) * 100).toFixed(0)}%)` : undefined}
-            chart={<TrendChart data={history} dataKey="heapUsed" color="var(--success)" formatValue={formatBytes} />}
-          />
-          <MetricCard
-            label="Event loop lag p99"
-            value={lagP99 !== null ? formatMs(lagP99) : null}
-            sub={lagP50 !== null ? `p50 ${formatMs(lagP50)} · p90 ${formatMs(lagP90)}` : undefined}
-            tone={lagP99 > 0.1 ? 'warning' : undefined}
-            chart={<TrendChart data={history} dataKey="lag" color="var(--danger)" formatValue={(v) => `${v.toFixed(1)} ms`} />}
-          />
-          <MetricCard label="Uptime" value={uptimeSeconds !== null ? formatDuration(uptimeSeconds) : null} />
         </div>
       )}
 
       {tab === 'correlation' && (
-        <>
-          <div className="page-header" style={{ marginBottom: 14, alignItems: 'flex-end' }}>
-            <p className="subtitle" style={{ maxWidth: 560 }}>
-              Overlays request volume, latency, event loop lag and CPU on one timeline so spikes can be visually
-              correlated. Backed by <code>/metrics/history</code> — durable, survives restarts.
-            </p>
-            <select
-              className="select-small"
-              value={correlationResolution}
-              onChange={(e) => setCorrelationResolution(e.target.value)}
-              aria-label="Bucket resolution"
-            >
-              {CORRELATION_RESOLUTIONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
+        <div className="flex flex-col gap-6">
           {!isAuthenticated ? (
             <DurableHistoryLoginPrompt />
           ) : (
-            <>
-              <div className="card">
-                <div className="card-title">
-                  Traffic, latency, lag &amp; CPU
-                  <span className="not-exposed">{correlationLoading ? 'loading…' : correlationError ? 'failed to load' : `${correlationRows.length} buckets`}</span>
-                </div>
-                <CorrelationChart data={correlationRows} />
-              </div>
-              <div className="card" style={{ marginTop: 14 }}>
-                <div className="card-title">Heap used (avg)</div>
-                <TrendChart
-                  data={correlationRows}
-                  dataKey="heapBytes"
-                  color="var(--success)"
-                  formatValue={formatBytes}
-                  height={100}
-                  connectNulls={false}
-                  emptyText={correlationLoading ? 'loading…' : correlationError ? 'failed to load' : 'no data yet'}
-                />
-              </div>
-              <p className="not-exposed" style={{ marginTop: 10 }}>
-                Quiet buckets (zero requests) are real data, shown as 0 on the traffic bars. Gaps in the lag / CPU /
-                heap lines mean the server was down for that bucket — they're breaks, not interpolated.
-              </p>
-            </>
+            <Panel
+              title="Traffic vs latency, loop and CPU"
+              action={
+                <Select value={correlationResolution} onValueChange={setCorrelationResolution}>
+                  <SelectTrigger size="sm" className="w-40 text-xs" aria-label="Bucket size">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CORRELATION_RESOLUTIONS.map((r) => (
+                      <SelectItem key={r.value} value={r.value} className="text-xs">
+                        {r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
+              meta={correlationLoading ? 'Loading…' : correlationError ? "Couldn't load" : `${correlationRows.length} buckets`}
+            >
+              <CorrelationChart data={correlationRows} />
+            </Panel>
           )}
-        </>
+        </div>
       )}
 
-      <details className="raw-explorer" style={{ marginTop: 40 }}>
-        <summary>Raw /metrics explorer ({families.size} metric families)</summary>
-        <pre className="mono">{rawText}</pre>
+      <details className="mt-10 text-[13px]">
+        <summary className="cursor-pointer text-muted-foreground">Raw /metrics ({families.size} families)</summary>
+        <pre className="mt-3 max-h-[420px] overflow-auto rounded-lg bg-card p-4 font-mono text-xs leading-[18px]">{rawText}</pre>
       </details>
     </div>
   )

@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { useLocation, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../lib/useAuth.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 export function Login() {
   const { login } = useAuth()
@@ -27,40 +30,36 @@ export function Login() {
   }
 
   return (
-    <div className="auth-card">
-      <h1>Log in</h1>
-      <p style={{ marginBottom: 20 }}>Access your orders and account.</p>
+    <div className="max-w-sm pt-4">
+      <h1 className="mb-5 text-[22px] leading-7 font-semibold tracking-tight">Log in</h1>
       <ErrorBanner error={error} />
-      <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="email">Email</Label>
+          <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-10" />
         </div>
-        <div className="field">
-          <label htmlFor="password">Password</label>
-          <input
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="password">Password</Label>
+          <Input
             id="password"
             type="password"
             autoComplete="current-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            className="h-10"
           />
         </div>
-        <button type="submit" className="btn primary" disabled={submitting} style={{ width: '100%' }}>
+        <Button type="submit" size="lg" className="mt-1 h-10" disabled={submitting}>
           {submitting ? 'Logging in…' : 'Log in'}
-        </button>
+        </Button>
       </form>
-      <div className="switch">
-        No account? <Link to="/register">Sign up</Link>
-      </div>
+      <p className="mt-4 text-[13px] text-muted-foreground">
+        New here?{' '}
+        <Link to="/register" className="text-foreground hover:underline">
+          Create an account
+        </Link>
+      </p>
     </div>
   )
 }

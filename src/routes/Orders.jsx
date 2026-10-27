@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { api, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
-import { OrderStatusBadge } from '../components/OrderStatusBadge.jsx'
 import { CenterLoading } from '../components/CenterLoading.jsx'
+import { LifecycleTrack } from '../components/LifecycleTrack.jsx'
+import { SignInGate } from '../components/SignInGate.jsx'
+import { EmptyState, PageHeader } from '../components/Panel.jsx'
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const POLL_INTERVAL_MS = 1200
@@ -30,28 +35,50 @@ function canCancel(order) {
   return order.status === 'RESERVED' && !order.paymentInitiatedAt
 }
 
-function formatTime(iso) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
+const TABS = [
+  { key: 'needs', label: 'Needs you', match: awaitingPay },
+  { key: 'moving', label: 'In progress', match: needsPolling },
+  { key: 'done', label: 'Finished', match: (o) => TERMINAL_STATUSES.has(o.status) },
+  { key: 'all', label: 'All', match: () => true },
+]
 
 function formatItems(items) {
-  if (!items?.length) return '—'
+  if (!items?.length) return 'No items'
   return items.map((i) => `${i.quantity}× ${i.productName}`).join(', ')
+}
+
+/** "Just now", "4 min ago", "2 h ago", or the date for anything older than a day. */
+function relative(iso, now) {
+  if (!iso) return '—'
+  const seconds = Math.max(0, (now - new Date(iso).getTime()) / 1000)
+  if (seconds < 45) return 'Just now'
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`
+  return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short' })
 }
 
 export function Orders() {
   const { status: authStatus, isAuthenticated } = useAuth()
+  const location = useLocation()
+  const justCheckedOut = location.state?.justCheckedOut
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [payingIds, setPayingIds] = useState(() => new Set())
   const [cancelingIds, setCancelingIds] = useState(() => new Set())
   const [error, setError] = useState(null)
+  const [tab, setTab] = useState(null)
+  const [now, setNow] = useState(() => Date.now())
   const ordersRef = useRef(orders)
 
   useEffect(() => {
     ordersRef.current = orders
   }, [orders])
+
+  // Keeps the "x min ago" column honest without a re-fetch.
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -96,6 +123,15 @@ export function Orders() {
     return () => clearInterval(interval)
   }, [isAuthenticated])
 
+  async function resync(orderId) {
+    try {
+      const { data } = await api.getOrder(orderId)
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
+    } catch (refetchErr) {
+      setError(refetchErr)
+    }
+  }
+
   async function handlePay(orderId) {
     setPayingIds((prev) => new Set(prev).add(orderId))
     setError(null)
@@ -106,16 +142,8 @@ export function Orders() {
       // 409 = order wasn't RESERVED, or payment was already initiated (e.g. a
       // double-click, or another tab beat us to it) — not a real error, just
       // re-sync with the server so polling picks up wherever it actually is.
-      if (err instanceof ApiError && err.status === 409) {
-        try {
-          const { data } = await api.getOrder(orderId)
-          setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
-        } catch (refetchErr) {
-          setError(refetchErr)
-        }
-      } else {
-        setError(err)
-      }
+      if (err instanceof ApiError && err.status === 409) await resync(orderId)
+      else setError(err)
     } finally {
       setPayingIds((prev) => {
         const next = new Set(prev)
@@ -134,16 +162,8 @@ export function Orders() {
     } catch (err) {
       // 409 = too late to cancel (payment already initiated, or already
       // terminal) — re-sync rather than showing it as an error.
-      if (err instanceof ApiError && err.status === 409) {
-        try {
-          const { data } = await api.getOrder(orderId)
-          setOrders((prev) => prev.map((o) => (o.id === orderId ? data : o)))
-        } catch (refetchErr) {
-          setError(refetchErr)
-        }
-      } else {
-        setError(err)
-      }
+      if (err instanceof ApiError && err.status === 409) await resync(orderId)
+      else setError(err)
     } finally {
       setCancelingIds((prev) => {
         const next = new Set(prev)
@@ -153,111 +173,126 @@ export function Orders() {
     }
   }
 
-  const hasInFlight = orders.some(needsPolling)
+  const counts = useMemo(() => Object.fromEntries(TABS.map((t) => [t.key, orders.filter(t.match).length])), [orders])
+  // Open on the queue that needs action when there is one; the user's pick wins after that.
+  const activeTab = tab ?? (counts.needs > 0 ? 'needs' : 'all')
+  const visible = orders.filter(TABS.find((t) => t.key === activeTab).match)
+  const hasInFlight = counts.moving > 0
 
   if (authStatus === 'loading') return <CenterLoading />
 
   if (!isAuthenticated) {
     return (
       <div>
-        <div className="page-header">
-          <div>
-            <h1>Orders</h1>
-            <p className="subtitle">Watch orders you've checked out from the shop move through the fulfilment pipeline.</p>
-          </div>
-        </div>
-        <div className="auth-card" style={{ margin: '48px auto' }}>
-          <h2>Log in to view your orders</h2>
-          <p style={{ marginBottom: 20 }}>You'll need an account to place orders and watch them progress.</p>
-          <Link to="/login" className="btn primary" style={{ width: '100%' }}>
-            Log in
-          </Link>
-          <div className="switch">
-            No account? <Link to="/register">Sign up</Link>
-          </div>
-        </div>
+        <PageHeader title="Orders" />
+        <SignInGate title="Sign in to see your orders" />
       </div>
     )
   }
 
+  const finding = counts.needs > 0 ? `${counts.needs} waiting for you to pay` : hasInFlight ? `${counts.moving} in progress` : orders.length ? 'All finished' : null
+
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h1>Orders</h1>
-          <p className="subtitle">
-            Orders are created by checking out a cart — inventory reservation runs asynchronously and pauses at{' '}
-            <code>RESERVED</code> until you click <strong>Pay</strong>. You can cancel any time before that.
-          </p>
-        </div>
-        <Link to="/shop" className="btn primary">
-          Shop
-        </Link>
-      </div>
+      <PageHeader
+        title="Orders"
+        subtitle={loading ? 'Loading…' : finding}
+        actions={
+          <Button asChild>
+            <Link to="/shop">New order</Link>
+          </Button>
+        }
+      />
+
+      {justCheckedOut && orders.some((o) => o.id === justCheckedOut && o.status === 'PENDING') && (
+        <p className="mb-4 rounded-lg bg-info-bg px-3.5 py-2.5 text-[13px] text-info">
+          Order <span className="font-mono">{justCheckedOut.slice(0, 8)}</span> placed
+        </p>
+      )}
 
       <ErrorBanner error={error} />
 
       {loading ? (
         <CenterLoading />
       ) : orders.length === 0 ? (
-        <div className="empty-state">
-          No orders yet — <Link to="/shop">visit the shop</Link> to place one and watch the fulfilment pipeline run.
-        </div>
+        <EmptyState>
+          No orders yet. <Link to="/shop" className="text-info hover:underline">Go to the shop</Link>
+        </EmptyState>
       ) : (
-        <div className="card" style={{ padding: 0 }}>
-          <table className="orders-table">
-            <thead>
-              <tr>
-                <th>Order</th>
-                <th>Status</th>
-                <th>Items</th>
-                <th>Created</th>
-                <th>Updated</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.map((order) => {
-                const polling = needsPolling(order)
-                const readyToPay = awaitingPay(order)
-                const cancelable = canCancel(order)
-                const paying = payingIds.has(order.id)
-                const canceling = cancelingIds.has(order.id)
-                const itemsText = formatItems(order.items)
-                return (
-                  <tr key={order.id}>
-                    <td className="mono">{order.id.slice(0, 8)}</td>
-                    <td>
-                      <OrderStatusBadge status={order.status} />
-                      {polling && <span className="live-dot" style={{ marginLeft: 8 }} title="Polling for updates" />}
-                    </td>
-                    <td className="truncate" title={itemsText}>
-                      {itemsText}
-                    </td>
-                    <td>{formatTime(order.createdAt)}</td>
-                    <td>{formatTime(order.updatedAt)}</td>
-                    <td>
-                      <div className="orders-actions">
-                        {readyToPay && (
-                          <button type="button" className="btn small primary" disabled={paying || canceling} onClick={() => handlePay(order.id)}>
-                            {paying ? 'Paying…' : 'Pay'}
-                          </button>
-                        )}
-                        {cancelable && (
-                          <button type="button" className="btn small danger" disabled={paying || canceling} onClick={() => handleCancel(order.id)}>
-                            {canceling ? '…' : 'Cancel'}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <Tabs value={activeTab} onValueChange={setTab} className="mb-4">
+            <TabsList variant="line" className="w-full justify-start gap-5 border-b border-border px-0">
+              {TABS.map((t) => (
+                <TabsTrigger key={t.key} value={t.key} className="flex-none px-0">
+                  {t.label}
+                  <span className="text-xs text-muted-foreground tabular">{counts[t.key]}</span>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+
+          {visible.length === 0 ? (
+            <EmptyState>{activeTab === 'needs' ? 'Nothing waiting' : activeTab === 'moving' ? 'Nothing in progress' : 'Nothing finished'}</EmptyState>
+          ) : (
+            <Table>
+              <TableHeader className="max-sm:hidden">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[32%] pl-0 text-xs font-normal text-muted-foreground">Order</TableHead>
+                  <TableHead className="text-xs font-normal text-muted-foreground">Progress</TableHead>
+                  <TableHead className="text-right text-xs font-normal text-muted-foreground">Updated</TableHead>
+                  <TableHead className="w-40 pr-0">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visible.map((order) => {
+                  const readyToPay = awaitingPay(order)
+                  const cancelable = canCancel(order)
+                  const paying = payingIds.has(order.id)
+                  const canceling = cancelingIds.has(order.id)
+                  const itemsText = formatItems(order.items)
+                  return (
+                    <TableRow key={order.id} className="border-border/60 max-sm:grid max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-3 max-sm:gap-y-2 max-sm:py-3">
+                      <TableCell className="py-3 pl-0 max-sm:p-0">
+                        <div className="font-mono text-[13px] font-medium" title={order.id}>
+                          {order.id.slice(0, 8)}
+                        </div>
+                        <div className="max-w-64 truncate text-xs text-muted-foreground" title={itemsText}>
+                          {itemsText}
+                        </div>
+                      </TableCell>
+                      <TableCell className="max-sm:order-last max-sm:col-span-2 max-sm:p-0">
+                        <LifecycleTrack order={order} />
+                      </TableCell>
+                      <TableCell
+                        className="text-right whitespace-nowrap text-muted-foreground tabular max-sm:hidden"
+                        title={new Date(order.updatedAt).toLocaleString()}
+                      >
+                        {relative(order.updatedAt, now)}
+                      </TableCell>
+                      <TableCell className="pr-0 text-right max-sm:p-0">
+                        <div className="flex items-center justify-end gap-1">
+                          {cancelable && (
+                            <Button variant="ghost" size="sm" className="text-negative hover:text-negative" disabled={paying || canceling} onClick={() => handleCancel(order.id)}>
+                              {canceling ? 'Cancelling…' : 'Cancel'}
+                            </Button>
+                          )}
+                          {readyToPay && (
+                            <Button variant="outline" size="sm" disabled={paying || canceling} onClick={() => handlePay(order.id)}>
+                              {paying ? 'Paying…' : 'Pay'}
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </>
       )}
-      {hasInFlight && <p style={{ marginTop: 12, fontSize: 12.5 }}>Polling in-flight orders every {POLL_INTERVAL_MS / 1000}s…</p>}
     </div>
   )
 }

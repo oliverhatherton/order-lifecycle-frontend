@@ -2,8 +2,11 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/useAuth.js'
 import { ErrorBanner } from '../components/ErrorBanner.jsx'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
-const PASSWORD_HINT = 'At least 8 characters, with upper & lower case, a number, and a symbol.'
+const PASSWORD_HINT = '8+ characters, upper and lower case, a number and a symbol.'
 
 export function Register() {
   const { register } = useAuth()
@@ -30,36 +33,28 @@ export function Register() {
 
   if (done) {
     return (
-      <div className="auth-card">
-        <h1>Account created</h1>
-        <p style={{ marginBottom: 20 }}>You can now log in with your new account.</p>
-        <button type="button" className="btn primary" style={{ width: '100%' }} onClick={() => navigate('/login')}>
-          Go to login
-        </button>
+      <div className="max-w-sm pt-4">
+        <h1 className="mb-2 text-[22px] leading-7 font-semibold tracking-tight">Account created</h1>
+        <p className="mb-5 text-sm text-muted-foreground">{email}</p>
+        <Button size="lg" className="h-10 w-full" onClick={() => navigate('/login')}>
+          Log in
+        </Button>
       </div>
     )
   }
 
   return (
-    <div className="auth-card">
-      <h1>Create account</h1>
-      <p style={{ marginBottom: 20 }}>Sign up to place and track orders.</p>
+    <div className="max-w-sm pt-4">
+      <h1 className="mb-5 text-[22px] leading-7 font-semibold tracking-tight">Create an account</h1>
       <ErrorBanner error={error} />
-      <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="email">Email</Label>
+          <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-10" />
         </div>
-        <div className="field">
-          <label htmlFor="password">Password</label>
-          <input
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="password">Password</Label>
+          <Input
             id="password"
             type="password"
             autoComplete="new-password"
@@ -68,16 +63,23 @@ export function Register() {
             maxLength={72}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            aria-describedby="password-hint"
+            className="h-10"
           />
-          <span className="hint">{PASSWORD_HINT}</span>
+          <span id="password-hint" className="text-xs text-muted-foreground">
+            {PASSWORD_HINT}
+          </span>
         </div>
-        <button type="submit" className="btn primary" disabled={submitting} style={{ width: '100%' }}>
+        <Button type="submit" size="lg" className="mt-1 h-10" disabled={submitting}>
           {submitting ? 'Creating account…' : 'Create account'}
-        </button>
+        </Button>
       </form>
-      <div className="switch">
-        Already have an account? <Link to="/login">Log in</Link>
-      </div>
+      <p className="mt-4 text-[13px] text-muted-foreground">
+        Already have one?{' '}
+        <Link to="/login" className="text-foreground hover:underline">
+          Log in
+        </Link>
+      </p>
     </div>
   )
 }
