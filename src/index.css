@@ -430,6 +430,18 @@ input {
   color: var(--text-faint);
 }
 
+.metric-card.tone-warning .value {
+  color: var(--warning);
+}
+
+.metric-card.tone-danger .value {
+  color: var(--danger);
+}
+
+.metric-card.tone-danger {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
 .metric-card.empty .value {
   color: var(--text-faint);
   font-size: 14px;
@@ -650,6 +662,12 @@ tbody tr:hover {
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font-mono);
+}
+
+.banner.success {
+  background: var(--success-bg);
+  border-color: rgba(52, 211, 153, 0.3);
+  color: var(--success);
 }
 
 .banner.info {
@@ -1051,4 +1069,47 @@ details.raw-explorer pre {
   .cart-panel {
     position: static;
   }
+}
+
+/* ---------- Metrics stat tables ---------- */
+
+.stat-table {
+  font-size: 13px;
+}
+
+.stat-table thead th {
+  padding: 6px 8px 8px;
+}
+
+.stat-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.stat-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stat-table .num {
+  text-align: right;
+}
+
+.stat-table td.tone-warning {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.stat-table td.tone-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* Tables scroll inside their card on narrow screens instead of widening the page. */
+.card:has(> .stat-table) {
+  overflow-x: auto;
 }
