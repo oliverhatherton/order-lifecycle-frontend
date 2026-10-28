@@ -23,7 +23,7 @@ export function Shop() {
   const [error, setError] = useState(null)
   const [checkingOut, setCheckingOut] = useState(false)
   const [checkoutNotice, setCheckoutNotice] = useState(null)
-  const { cart, setCart, quantityOf, overrides, setQuantity, flush } = useCartEditor({ onError: setError })
+  const { cart, setCart, quantityOf, lineOrder, setQuantity, flush } = useCartEditor({ onError: setError })
 
   useEffect(() => {
     let cancelled = false
@@ -92,15 +92,14 @@ export function Shop() {
     )
   }
 
-  // The server's cart with unconfirmed quantities applied, so the panel
-  // matches the steppers while requests are pending.
-  const cartLines = (cart?.items ?? [])
-    .map((item) => ({ ...item, quantity: quantityOf(item.productId) }))
-    .concat(
-      [...overrides.keys()]
-        .filter((id) => !cart?.items?.some((i) => i.productId === id))
-        .map((id) => ({ productId: id, productName: products.find((p) => p.id === id)?.name ?? '', quantity: quantityOf(id) })),
-    )
+  // Lines in the order they were added, with unconfirmed quantities applied,
+  // so the panel matches the steppers while requests are pending.
+  const cartLines = lineOrder
+    .map((id) => ({
+      productId: id,
+      productName: cart?.items?.find((i) => i.productId === id)?.productName ?? products.find((p) => p.id === id)?.name ?? '',
+      quantity: quantityOf(id),
+    }))
     .filter((item) => item.quantity > 0)
   const cartUnits = cartLines.reduce((acc, i) => acc + i.quantity, 0)
   const maxStock = Math.max(...products.map((p) => p.stock), 1)

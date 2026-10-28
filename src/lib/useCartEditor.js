@@ -33,13 +33,15 @@ function mergeLine(prev, next, productId) {
  * (as an override on top of the server's cart) and batches taps per product:
  * the final quantity is sent once taps stop for BATCH_MS, and if a request
  * for that product is still in flight, the latest quantity goes as soon as it
- * returns. Each response is the server's cart, so nothing is refetched. On a
+ * returns. Each response is the server's cart, so nothing is refetched, and
+ * `lineOrder` keeps cart lines where they were whatever order it comes in. On a
  * failure the product's override is dropped — it snaps back to the server's
  * value — and `onError` is called.
  */
 export function useCartEditor({ onError }) {
   const [cart, setCartState] = useState(null)
   const [overrides, setOverrides] = useState(() => new Map()) // productId -> quantity not yet confirmed
+  const [lineOrder, setLineOrderState] = useState(() => []) // productIds in the order lines first appeared
   const onErrorRef = useRef(onError)
 
   useEffect(() => {
@@ -49,6 +51,7 @@ export function useCartEditor({ onError }) {
   const [editor] = useState(() => {
     let currentCart = null
     let currentOverrides = new Map()
+    let currentOrder = []
     const slots = new Map() // productId -> { timer, inFlight }
 
     function slotFor(id) {
@@ -56,9 +59,23 @@ export function useCartEditor({ onError }) {
       return slots.get(id)
     }
 
+    function setOrder(next) {
+      if (next.length === currentOrder.length && next.every((id, i) => id === currentOrder[i])) return
+      currentOrder = next
+      setLineOrderState(next)
+    }
+
+    /**
+     * The server returns lines in no fixed order (an update can move a row to
+     * the end), so lines keep the position they first appeared in: known ones
+     * stay put, dropped ones leave, new ones go to the end.
+     */
     function setCart(next) {
       currentCart = next
       setCartState(next)
+      const ids = new Set([...(next?.items ?? []).map((i) => i.productId), ...currentOverrides.keys()])
+      const kept = currentOrder.filter((id) => ids.has(id))
+      setOrder(kept.concat([...ids].filter((id) => !kept.includes(id))))
     }
 
     function writeOverride(id, quantity) {
@@ -107,6 +124,9 @@ export function useCartEditor({ onError }) {
 
       setQuantity(id, quantity) {
         writeOverride(id, quantity)
+        // Taking a line to zero drops its slot, so adding it back puts it at the end.
+        if (quantity > 0 && !currentOrder.includes(id)) setOrder([...currentOrder, id])
+        else if (quantity <= 0 && currentOrder.includes(id)) setOrder(currentOrder.filter((x) => x !== id))
         const slot = slotFor(id)
         clearTimeout(slot.timer)
         slot.timer = setTimeout(() => {
@@ -147,7 +167,7 @@ export function useCartEditor({ onError }) {
     cart,
     setCart: editor.setCart,
     quantityOf: (productId) => overrides.get(productId) ?? quantityInCart(cart, productId),
-    overrides,
+    lineOrder,
     setQuantity: editor.setQuantity,
     flush: editor.flush,
   }
