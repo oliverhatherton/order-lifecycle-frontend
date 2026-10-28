@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { BarChart3, BookOpen, House, Menu, Package, ShoppingCart, Users } from 'lucide-react'
 import { useAuth } from '../lib/useAuth.js'
+import { useBackend } from '../lib/useBackend.js'
 import { API_BASE } from '../lib/api.js'
 import { Mark } from './Mark.jsx'
 import { Button } from '@/components/ui/button'
@@ -112,6 +113,14 @@ function SidebarBody() {
  */
 export function AppShell({ children }) {
   const { isAuthenticated, sessionCheckError, retrySessionCheck } = useAuth()
+  const { status: backendStatus } = useBackend()
+
+  // A session check that failed because the backend was asleep isn't a real
+  // error: the pill already says it's waking. Retry once it answers.
+  useEffect(() => {
+    if (backendStatus === 'up' && sessionCheckError) retrySessionCheck()
+  }, [backendStatus, sessionCheckError, retrySessionCheck])
+  const showSessionError = sessionCheckError && backendStatus === 'up'
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
   const pageName = PAGE_NAMES[location.pathname] ?? 'Order Lifecycle'
@@ -146,10 +155,6 @@ export function AppShell({ children }) {
           <strong className="font-medium text-foreground">{pageName}</strong>
         </div>
         <div className="flex-1" />
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground max-sm:hidden">
-          <span className={cn('size-1.5 rounded-full', sessionCheckError ? 'bg-faint' : 'bg-positive')} />
-          {sessionCheckError ? 'API unreachable' : 'Live API'}
-        </span>
         {!isAuthenticated && (
           <Button asChild size="sm" variant="outline">
             <Link to="/login">Log in</Link>
@@ -158,7 +163,7 @@ export function AppShell({ children }) {
       </header>
 
       <div className="min-w-0 border-t border-border bg-sheet md:mr-2 md:mb-2 md:rounded-2xl md:border">
-        {sessionCheckError && (
+        {showSessionError && (
           <div className="m-4 mb-0 flex items-center gap-3 rounded-lg bg-negative-bg px-3.5 py-2.5 text-[13px] text-negative">
             Couldn't verify your session. Looks like a network or CORS problem.
             <Button size="sm" variant="outline" className="ml-auto" onClick={retrySessionCheck}>
